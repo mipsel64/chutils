@@ -796,6 +796,7 @@ dependencies = [
  "clickhouse",
  "serde",
  "serde_repr",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
