@@ -148,14 +148,11 @@ async fn test_info_with_local_migrations() {
 #[tokio::test]
 #[serial(clickhouse)]
 async fn test_add_simple_migration() {
-    let migrator = require_clickhouse!();
-
     let temp_dir = tempfile::tempdir().unwrap();
     let src = temp_dir.path().to_str().unwrap();
 
-    let result = migrator
-        .add(src, "create_users", Some(MigrationFileMode::Simple))
-        .await;
+    let result =
+        migration::Migrator::add(src, "create_users", Some(MigrationFileMode::Simple)).await;
     assert!(result.is_ok());
 
     let files = result.unwrap();
@@ -169,14 +166,11 @@ async fn test_add_simple_migration() {
 #[tokio::test]
 #[serial(clickhouse)]
 async fn test_add_reversible_migration() {
-    let migrator = require_clickhouse!();
-
     let temp_dir = tempfile::tempdir().unwrap();
     let src = temp_dir.path().to_str().unwrap();
 
-    let result = migrator
-        .add(src, "create_users", Some(MigrationFileMode::Reversible))
-        .await;
+    let result =
+        migration::Migrator::add(src, "create_users", Some(MigrationFileMode::Reversible)).await;
     assert!(result.is_ok());
 
     let files = result.unwrap();
@@ -188,21 +182,16 @@ async fn test_add_reversible_migration() {
 #[tokio::test]
 #[serial(clickhouse)]
 async fn test_add_migration_increments_version() {
-    let migrator = require_clickhouse!();
-
     let temp_dir = tempfile::tempdir().unwrap();
     let src = temp_dir.path().to_str().unwrap();
 
     // Add first migration
-    migrator
-        .add(src, "first", Some(MigrationFileMode::Simple))
+    migration::Migrator::add(src, "first", Some(MigrationFileMode::Simple))
         .await
         .unwrap();
 
     // Add second migration
-    let result = migrator
-        .add(src, "second", Some(MigrationFileMode::Simple))
-        .await;
+    let result = migration::Migrator::add(src, "second", Some(MigrationFileMode::Simple)).await;
     assert!(result.is_ok());
 
     let files = result.unwrap();
@@ -600,8 +589,7 @@ async fn test_full_migration_workflow() {
     let table_name = format!("test_workflow_{}", test_id);
 
     // 1. Add a reversible migration
-    let files = migrator
-        .add(src, "create_table", Some(MigrationFileMode::Reversible))
+    let files = migration::Migrator::add(src, "create_table", Some(MigrationFileMode::Reversible))
         .await
         .unwrap();
     assert_eq!(files.len(), 2);

@@ -5,4 +5,8 @@ edition.workspace = true
 
 [dependencies]
 tokio = { workspace = true }
-
+clap = { workspace = true }
+eyre = { workspace = true }
+tracing = { workspace = true }
+migration = { workspace = true, features = ["clap"] }
+tracing-subscriber = { workspace = true }

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = ["rustls-tls", "clap"] 
+default = ["rustls-tls"] 
 rustls-tls = ["clickhouse/rustls-tls"]
 rustls-tls-ring = ["clickhouse/rustls-tls-ring"]
 native-tls = ["clickhouse/native-tls"]

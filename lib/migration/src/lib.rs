@@ -2,10 +2,7 @@ pub mod error;
 mod fs;
 
 pub use error::Error;
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 #[async_trait::async_trait]
 pub trait Migration {
@@ -18,7 +15,6 @@ pub trait Migration {
     /// is MigrationFileMode::Simple).
     /// Returns a list of migration files if success
     async fn add(
-        &self,
         src: &str,
         name: &str,
         mode: Option<MigrationFileMode>,
@@ -81,10 +77,10 @@ pub struct Builder {
     /// Clickhouse request options e.g: --request-option async_insert=1
     #[cfg_attr(
         feature = "clap",
-        clap(long = "request-option", env = "REQUEST_OPTIONS", value_parser = parse_request_options)
+        clap(long = "clickhouse-option", env = "CLICKHOUSE_OPTIONS", value_parser = parse_request_options, value_delimiter = ' ')
     )]
     #[serde(default)]
-    pub options: HashMap<String, String>,
+    pub options: Vec<(String, String)>,
 }
 
 impl Builder {
@@ -94,7 +90,7 @@ impl Builder {
             username: None,
             password: None,
             database: None,
-            options: HashMap::new(),
+            options: vec![],
         }
     }
 
@@ -119,12 +115,20 @@ impl Builder {
         self
     }
 
-    pub fn with_option(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.options.insert(name.into(), value.into());
+    pub fn with_database<T>(mut self, db: Option<T>) -> Self
+    where
+        T: Into<String>,
+    {
+        self.database = db.map(|u| u.into());
         self
     }
 
-    pub fn with_options(mut self, opts: HashMap<String, String>) -> Self {
+    pub fn with_option(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.options.push((name.into(), value.into()));
+        self
+    }
+
+    pub fn with_options(mut self, opts: Vec<(String, String)>) -> Self {
         self.options = opts;
         self
     }
@@ -440,7 +444,7 @@ impl From<MigrationFile> for MigrationInfo {
     }
 }
 
-fn parse_request_options(raw: &str) -> Result<(String, String), String> {
+pub fn parse_request_options(raw: &str) -> Result<(String, String), String> {
     raw.split_once('=')
         .and_then(|(key, value)| {
             if key.is_empty() || value.is_empty() {
@@ -503,18 +507,26 @@ mod tests {
         let builder = Builder::new("http://localhost")
             .with_option("async_insert", "1")
             .with_option("wait_for_async_insert", "0");
-        assert_eq!(builder.options.get("async_insert"), Some(&"1".to_string()));
-        assert_eq!(
-            builder.options.get("wait_for_async_insert"),
-            Some(&"0".to_string())
+        assert!(
+            builder
+                .options
+                .iter()
+                .any(|(k, v)| k == "async_insert" && v == "1")
+        );
+        assert!(
+            builder
+                .options
+                .iter()
+                .any(|(k, v)| k == "wait_for_async_insert" && v == "0")
         );
     }
 
     #[test]
     fn test_builder_with_options() {
-        let mut opts = HashMap::new();
-        opts.insert("key1".to_string(), "value1".to_string());
-        opts.insert("key2".to_string(), "value2".to_string());
+        let opts = vec![
+            ("key1".to_string(), "value1".to_string()),
+            ("key2".to_string(), "value2".to_string()),
+        ];
 
         let builder = Builder::new("http://localhost").with_options(opts);
         assert_eq!(builder.options.len(), 2);
