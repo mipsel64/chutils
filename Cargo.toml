@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["bin/*", "lib/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+migration = { path = "./lib/migration" }
+
+tokio = { version = "1.49", features = ["full"] }
+tracing = "0.1"
+eyre = "0.6"
+clap = { version = "4.5", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+clickhouse = { version = "0.13", default-features = false }
+async-trait = { version = "0.1" }
+thiserror = "2"
+chrono = { version = "0.4" }
+serde_repr = "0.1"

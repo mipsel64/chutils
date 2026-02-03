@@ -1,0 +1,22 @@
+[package]
+name = "migration"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["rustls-tls", "clap"] 
+rustls-tls = ["clickhouse/rustls-tls"]
+rustls-tls-ring = ["clickhouse/rustls-tls-ring"]
+native-tls = ["clickhouse/native-tls"]
+clap = ["dep:clap"]
+
+[dependencies]
+tokio = { workspace = true }
+tracing = { workspace = true }
+clickhouse = { workspace = true, features = ["chrono", "inserter"] }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true}
+clap = { workspace = true, optional = true }
+thiserror = { workspace = true }
+serde_repr = { workspace = true }
