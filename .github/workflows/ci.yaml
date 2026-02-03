@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:latest
+        ports:
+          - "8123:8123"
+        env:
+          CLICKHOUSE_USER: admin
+          CLICKHOUSE_PASSWORD: admin
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        options: >-
+          --health-cmd "clickhouse client --query='SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+
+      - name: Run lint check
+        run: cargo clippy --all-targets --all-features -- -D warnings && cargo fmt --all --check
+
+      - name: Run tests
+        env:
+          TEST_CLICKHOUSE_URL: http://localhost:8123
+          TEST_CLICKHOUSE_USER: admin
+          TEST_CLICKHOUSE_PASSWORD: admin
+        run: cargo test
+

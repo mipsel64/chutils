@@ -252,28 +252,58 @@ mod tests {
 
     #[test]
     fn test_build_file_path_simple() {
-        let path = build_file_path("migrations", 1, "create_users", MigrationFileMode::Simple, false);
+        let path = build_file_path(
+            "migrations",
+            1,
+            "create_users",
+            MigrationFileMode::Simple,
+            false,
+        );
         assert_eq!(path, "migrations/0001_create_users.sql");
     }
 
     #[test]
     fn test_build_file_path_simple_ignores_is_up() {
         // Simple mode should ignore is_up parameter
-        let path_up = build_file_path("migrations", 1, "create_users", MigrationFileMode::Simple, true);
-        let path_down = build_file_path("migrations", 1, "create_users", MigrationFileMode::Simple, false);
+        let path_up = build_file_path(
+            "migrations",
+            1,
+            "create_users",
+            MigrationFileMode::Simple,
+            true,
+        );
+        let path_down = build_file_path(
+            "migrations",
+            1,
+            "create_users",
+            MigrationFileMode::Simple,
+            false,
+        );
         assert_eq!(path_up, path_down);
         assert_eq!(path_up, "migrations/0001_create_users.sql");
     }
 
     #[test]
     fn test_build_file_path_reversible_up() {
-        let path = build_file_path("migrations", 1, "create_users", MigrationFileMode::Reversible, true);
+        let path = build_file_path(
+            "migrations",
+            1,
+            "create_users",
+            MigrationFileMode::Reversible,
+            true,
+        );
         assert_eq!(path, "migrations/0001_create_users.up.sql");
     }
 
     #[test]
     fn test_build_file_path_reversible_down() {
-        let path = build_file_path("migrations", 1, "create_users", MigrationFileMode::Reversible, false);
+        let path = build_file_path(
+            "migrations",
+            1,
+            "create_users",
+            MigrationFileMode::Reversible,
+            false,
+        );
         assert_eq!(path, "migrations/0001_create_users.down.sql");
     }
 
@@ -285,7 +315,13 @@ mod tests {
 
     #[test]
     fn test_build_file_path_large_sequence() {
-        let path = build_file_path("migrations", 12345, "test", MigrationFileMode::Simple, false);
+        let path = build_file_path(
+            "migrations",
+            12345,
+            "test",
+            MigrationFileMode::Simple,
+            false,
+        );
         assert_eq!(path, "migrations/12345_test.sql");
     }
 
@@ -377,9 +413,15 @@ mod tests {
         let src = temp_dir.path().to_str().unwrap();
 
         // Create files out of order
-        tokio::fs::write(format!("{}/0003_third.sql", src), b"").await.unwrap();
-        tokio::fs::write(format!("{}/0001_first.sql", src), b"").await.unwrap();
-        tokio::fs::write(format!("{}/0002_second.sql", src), b"").await.unwrap();
+        tokio::fs::write(format!("{}/0003_third.sql", src), b"")
+            .await
+            .unwrap();
+        tokio::fs::write(format!("{}/0001_first.sql", src), b"")
+            .await
+            .unwrap();
+        tokio::fs::write(format!("{}/0002_second.sql", src), b"")
+            .await
+            .unwrap();
 
         let result = list_migrations(src).await.unwrap();
 
@@ -394,9 +436,15 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let src = temp_dir.path().to_str().unwrap();
 
-        tokio::fs::write(format!("{}/0001_valid.sql", src), b"").await.unwrap();
-        tokio::fs::write(format!("{}/0002_invalid.txt", src), b"").await.unwrap();
-        tokio::fs::write(format!("{}/readme.md", src), b"").await.unwrap();
+        tokio::fs::write(format!("{}/0001_valid.sql", src), b"")
+            .await
+            .unwrap();
+        tokio::fs::write(format!("{}/0002_invalid.txt", src), b"")
+            .await
+            .unwrap();
+        tokio::fs::write(format!("{}/readme.md", src), b"")
+            .await
+            .unwrap();
 
         let result = list_migrations(src).await.unwrap();
 
@@ -409,8 +457,12 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let src = temp_dir.path().to_str().unwrap();
 
-        tokio::fs::write(format!("{}/0001_valid.sql", src), b"").await.unwrap();
-        tokio::fs::create_dir(format!("{}/0002_subdir.sql", src)).await.unwrap();
+        tokio::fs::write(format!("{}/0001_valid.sql", src), b"")
+            .await
+            .unwrap();
+        tokio::fs::create_dir(format!("{}/0002_subdir.sql", src))
+            .await
+            .unwrap();
 
         let result = list_migrations(src).await.unwrap();
 
@@ -422,8 +474,12 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let src = temp_dir.path().to_str().unwrap();
 
-        tokio::fs::write(format!("{}/0001_create.up.sql", src), b"").await.unwrap();
-        tokio::fs::write(format!("{}/0001_create.down.sql", src), b"").await.unwrap();
+        tokio::fs::write(format!("{}/0001_create.up.sql", src), b"")
+            .await
+            .unwrap();
+        tokio::fs::write(format!("{}/0001_create.down.sql", src), b"")
+            .await
+            .unwrap();
 
         let result = list_migrations(src).await.unwrap();
 
@@ -439,9 +495,15 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let src = temp_dir.path().to_str().unwrap();
 
-        tokio::fs::write(format!("{}/0001_first.sql", src), b"").await.unwrap();
-        tokio::fs::write(format!("{}/0003_third.sql", src), b"").await.unwrap();
-        tokio::fs::write(format!("{}/0002_second.sql", src), b"").await.unwrap();
+        tokio::fs::write(format!("{}/0001_first.sql", src), b"")
+            .await
+            .unwrap();
+        tokio::fs::write(format!("{}/0003_third.sql", src), b"")
+            .await
+            .unwrap();
+        tokio::fs::write(format!("{}/0002_second.sql", src), b"")
+            .await
+            .unwrap();
 
         let result = get_latest_migration_file(src).await.unwrap();
 
@@ -452,7 +514,9 @@ mod tests {
     #[tokio::test]
     async fn test_get_latest_migration_file_empty_dir() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let result = get_latest_migration_file(temp_dir.path().to_str().unwrap()).await.unwrap();
+        let result = get_latest_migration_file(temp_dir.path().to_str().unwrap())
+            .await
+            .unwrap();
 
         assert!(result.is_none());
     }
@@ -479,8 +543,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(result.iter().any(|f| f.ends_with("0001_create_users.up.sql")));
-        assert!(result.iter().any(|f| f.ends_with("0001_create_users.down.sql")));
+        assert!(
+            result
+                .iter()
+                .any(|f| f.ends_with("0001_create_users.up.sql"))
+        );
+        assert!(
+            result
+                .iter()
+                .any(|f| f.ends_with("0001_create_users.down.sql"))
+        );
     }
 
     #[tokio::test]
@@ -489,7 +561,9 @@ mod tests {
         let src = temp_dir.path().to_str().unwrap();
 
         // Create first migration
-        tokio::fs::write(format!("{}/0001_first.sql", src), b"").await.unwrap();
+        tokio::fs::write(format!("{}/0001_first.sql", src), b"")
+            .await
+            .unwrap();
 
         let result = gen_migration_file(src, "second", None).await.unwrap();
 
@@ -502,8 +576,12 @@ mod tests {
         let src = temp_dir.path().to_str().unwrap();
 
         // Create reversible migration
-        tokio::fs::write(format!("{}/0001_first.up.sql", src), b"").await.unwrap();
-        tokio::fs::write(format!("{}/0001_first.down.sql", src), b"").await.unwrap();
+        tokio::fs::write(format!("{}/0001_first.up.sql", src), b"")
+            .await
+            .unwrap();
+        tokio::fs::write(format!("{}/0001_first.down.sql", src), b"")
+            .await
+            .unwrap();
 
         // Create without specifying mode
         let result = gen_migration_file(src, "second", None).await.unwrap();
@@ -520,8 +598,12 @@ mod tests {
         let src = temp_dir.path().to_str().unwrap();
 
         // Create reversible migration
-        tokio::fs::write(format!("{}/0001_first.up.sql", src), b"").await.unwrap();
-        tokio::fs::write(format!("{}/0001_first.down.sql", src), b"").await.unwrap();
+        tokio::fs::write(format!("{}/0001_first.up.sql", src), b"")
+            .await
+            .unwrap();
+        tokio::fs::write(format!("{}/0001_first.down.sql", src), b"")
+            .await
+            .unwrap();
 
         // Override with simple mode
         let result = gen_migration_file(src, "second", Some(MigrationFileMode::Simple))
@@ -537,7 +619,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let src = temp_dir.path().to_str().unwrap();
 
-        let result = gen_migration_file(src, "create users table", None).await.unwrap();
+        let result = gen_migration_file(src, "create users table", None)
+            .await
+            .unwrap();
 
         assert!(result[0].contains("create_users_table"));
     }
