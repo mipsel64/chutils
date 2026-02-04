@@ -8,5 +8,5 @@ tokio = { workspace = true }
 clap = { workspace = true }
 eyre = { workspace = true }
 tracing = { workspace = true }
-migration = { workspace = true, features = ["clap"] }
+migration = { workspace = true, features = ["clap", "rustls-tls-ring"] }
 tracing-subscriber = { workspace = true }
