@@ -5,6 +5,12 @@ members = ["bin/*", "lib/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+description = "A CLI tool and Rust library for managing ClickHouse database migrations"
+license = "MIT"
+readme = "README.md"
+authors = ["Viet-Anh Duong <vietanhs0817@gmail.com>"]
+repository = "https://github.com/mipsel64/ch-migrator"
+exclude = ["/.github/", "/.gitignore"]
 
 [workspace.dependencies]
 migration = { path = "./lib/migration" }
