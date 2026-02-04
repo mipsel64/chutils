@@ -13,7 +13,7 @@ repository = "https://github.com/mipsel64/ch-migrator"
 exclude = ["/.github/", "/.gitignore"]
 
 [workspace.dependencies]
-migration = { path = "./lib/migration" }
+migration = { path = "./lib/migration", default-features = false }
 
 tokio = { version = "1.49", features = ["full"] }
 tracing = "0.1"
