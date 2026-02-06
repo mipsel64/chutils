@@ -61,7 +61,7 @@ COPY . .
 
 RUN --mount=type=cache,id=cargo-registry,target=$CARGO_HOME/registry,sharing=locked \
   --mount=type=cache,id=cargo-git,target=$CARGO_HOME/git,sharing=locked \
-  cargo build --bin cli --target $(cat rust_target.txt) --release && \
+  cargo build --bin chutils --target $(cat rust_target.txt) --release && \
   mkdir -p /tmp/out && \
   cp target/$(cat rust_target.txt)/release/cli /tmp/out/ch-migrator
 
