@@ -146,6 +146,9 @@ impl Builder {
         if let Some(password) = self.password {
             inner = inner.with_password(password);
         }
+        if let Some(database) = self.database {
+            inner = inner.with_database(database);
+        }
 
         for (k, v) in self.options {
             inner = inner.with_option(k, v);
