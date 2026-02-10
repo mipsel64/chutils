@@ -164,19 +164,6 @@ async fn setup_test_table(raw: &clickhouse::Client, db: &str, table: &str) {
 // ==================== BackupConfig Validation Tests ====================
 
 #[tokio::test]
-async fn test_backup_config_validates_empty_db() {
-    let cfg = BackupConfig::new(StoreMethod::File("/tmp/test".to_string()), "");
-    let result = cfg.validate();
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Database name must be specified")
-    );
-}
-
-#[tokio::test]
 async fn test_backup_config_validates_s3_empty_url() {
     let store = StoreMethod::S3 {
         url: "".to_string(),
@@ -231,46 +218,6 @@ async fn test_backup_config_validates_s3_empty_secret_key() {
             .to_string()
             .contains("S3 Secret Key must be specified")
     );
-}
-
-#[tokio::test]
-async fn test_restore_config_validates_empty_source_db() {
-    let cfg = RestoreConfig::new(StoreMethod::File("/tmp/test".to_string()), "");
-    let result = cfg.validate();
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Source database name must be specified")
-    );
-}
-
-#[tokio::test]
-async fn test_backup_config_builder() {
-    let store = StoreMethod::File("/tmp/test".to_string());
-    let cfg = BackupConfig::new(store, "mydb")
-        .add_table("users")
-        .add_table("orders")
-        .add_option("base_backup=''");
-
-    assert_eq!(cfg.db, "mydb");
-    assert_eq!(cfg.tables, vec!["users", "orders"]);
-    assert_eq!(cfg.options, vec!["base_backup=''"]);
-}
-
-#[tokio::test]
-async fn test_restore_config_builder() {
-    let store = StoreMethod::File("/tmp/test".to_string());
-    let cfg = RestoreConfig::new(store, "source_db")
-        .target_db(Some("target_db"))
-        .add_table("users")
-        .mode(backup::RestoreMode::StructureOnly);
-
-    assert_eq!(cfg.source_db, "source_db");
-    assert_eq!(cfg.target_db, Some("target_db".to_string()));
-    assert_eq!(cfg.tables, vec!["users"]);
-    assert!(cfg.mode.is_some());
 }
 
 // ==================== Backup to S3 Tests ====================

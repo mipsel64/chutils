@@ -104,12 +104,6 @@ impl Backup for Client {
             StoreMethod::S3 { .. } => {
                 buffer.push_str("S3(?, ?, ?)");
             }
-            StoreMethod::Disk { .. } => {
-                buffer.push_str("DISK(?, ?)");
-            }
-            StoreMethod::File(_) => {
-                buffer.push_str("FILE(?)");
-            }
         }
 
         buffer.push_str(&options_str);
@@ -138,22 +132,6 @@ impl Backup for Client {
                     );
                     query = query.bind(url).bind(access_key).bind(secret_key);
                 }
-                StoreMethod::Disk { name, path } => {
-                    query = query.bind(name).bind(format!(
-                        "{}/{}/{}",
-                        path.trim_end_matches('/'),
-                        db.trim_end_matches('/'),
-                        table.trim_end_matches('/')
-                    ));
-                }
-                StoreMethod::File(path) => {
-                    query = query.bind(format!(
-                        "{}/{}/{}",
-                        path.trim_end_matches('/'),
-                        db.trim_end_matches('/'),
-                        table.trim_end_matches('/')
-                    ));
-                }
             }
 
             let backup_id: String = query.fetch_one().await.map_err(Error::ClickhouseError)?;
@@ -181,9 +159,7 @@ impl Restore for Client {
 
         // If no tables specified, discover all tables in the backup
         let tables = if tables.is_empty() {
-            let discovered = restore_from
-                .list_tables(&self.inner, &source_db)
-                .await?;
+            let discovered = restore_from.list_tables(&self.inner, &source_db).await?;
             if discovered.is_empty() {
                 return Err(Error::InvalidInput(
                     "No tables found in the backup source".to_string(),
@@ -241,12 +217,6 @@ impl Restore for Client {
             StoreMethod::S3 { .. } => {
                 buffer.push_str("S3(?, ?, ?)");
             }
-            StoreMethod::Disk { .. } => {
-                buffer.push_str("DISK(?, ?)");
-            }
-            StoreMethod::File(_) => {
-                buffer.push_str("FILE(?)");
-            }
         }
 
         buffer.push_str(&options_str);
@@ -282,22 +252,6 @@ impl Restore for Client {
                         table.trim_end_matches('/')
                     );
                     query = query.bind(url).bind(access_key).bind(secret_key);
-                }
-                StoreMethod::Disk { name, path } => {
-                    query = query.bind(name).bind(format!(
-                        "{}/{}/{}",
-                        path.trim_end_matches('/'),
-                        source_db.trim_end_matches('/'),
-                        table.trim_end_matches('/')
-                    ));
-                }
-                StoreMethod::File(path) => {
-                    query = query.bind(format!(
-                        "{}/{}/{}",
-                        path.trim_end_matches('/'),
-                        source_db.trim_end_matches('/'),
-                        table.trim_end_matches('/')
-                    ));
                 }
             }
 
@@ -561,11 +515,6 @@ pub enum StoreMethod {
         secret_key: String,
         prefix_path: Option<String>,
     },
-    Disk {
-        name: String,
-        path: String,
-    },
-    File(String),
 }
 
 impl StoreMethod {
@@ -593,26 +542,6 @@ impl StoreMethod {
                     ));
                 }
             }
-            StoreMethod::Disk { name, path } => {
-                if name.is_empty() {
-                    return Err(Error::InvalidInput(
-                        "Disk name must be specified".to_string(),
-                    ));
-                }
-
-                if path.is_empty() {
-                    return Err(Error::InvalidInput(
-                        "Disk path must be specified".to_string(),
-                    ));
-                }
-            }
-            StoreMethod::File(path) => {
-                if path.is_empty() {
-                    return Err(Error::InvalidInput(
-                        "File path must be specified".to_string(),
-                    ));
-                }
-            }
         }
 
         Ok(())
@@ -634,8 +563,6 @@ impl StoreMethod {
                 };
                 Some(url)
             }
-
-            _ => None,
         }
     }
 
@@ -651,9 +578,8 @@ impl StoreMethod {
         client: &clickhouse::Client,
         source_db: &str,
     ) -> Result<Vec<String>, Error> {
-        let extract_expr = concat!(
-            "replaceRegexpOne(_path, '.*/metadata/[^/]+/([^/]+)\\.sql$', '\\\\1')",
-        );
+        let extract_expr =
+            concat!("replaceRegexpOne(_path, '.*/metadata/[^/]+/([^/]+)\\.sql$', '\\\\1')",);
 
         match self {
             StoreMethod::S3 {
@@ -678,51 +604,6 @@ impl StoreMethod {
                     .bind(&glob_url)
                     .bind(access_key)
                     .bind(secret_key)
-                    .fetch_all()
-                    .await
-                    .map_err(Error::ClickhouseError)?;
-
-                Ok(tables)
-            }
-            StoreMethod::Disk { name, path } => {
-                let glob_path = format!(
-                    "{}/{}/*/metadata/{}/*.sql",
-                    path.trim_end_matches('/'),
-                    source_db,
-                    source_db,
-                );
-
-                let query_str = format!(
-                    "SELECT DISTINCT {} AS table_name FROM disk(?, ?, 'One') ORDER BY table_name",
-                    extract_expr,
-                );
-
-                let tables: Vec<String> = client
-                    .query(&query_str)
-                    .bind(name)
-                    .bind(&glob_path)
-                    .fetch_all()
-                    .await
-                    .map_err(Error::ClickhouseError)?;
-
-                Ok(tables)
-            }
-            StoreMethod::File(path) => {
-                let glob_path = format!(
-                    "{}/{}/*/metadata/{}/*.sql",
-                    path.trim_end_matches('/'),
-                    source_db,
-                    source_db,
-                );
-
-                let query_str = format!(
-                    "SELECT DISTINCT {} AS table_name FROM file(?, 'One') ORDER BY table_name",
-                    extract_expr,
-                );
-
-                let tables: Vec<String> = client
-                    .query(&query_str)
-                    .bind(&glob_path)
                     .fetch_all()
                     .await
                     .map_err(Error::ClickhouseError)?;
