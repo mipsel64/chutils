@@ -30,3 +30,5 @@ serde_repr = "0.1"
 serial_test = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = { version = "0.3" }
+human_bytes = "0.4"
+humantime = "2"

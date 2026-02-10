@@ -99,10 +99,14 @@ macro_rules! require_s3 {
 /// Returns the final statuses.
 async fn wait_for_backup_completion(
     client: &Client,
-    backup_ids: &[String],
+    backup_ids: &[(String, String)],
     timeout: Duration,
 ) -> Vec<backup::BackupStatus> {
     let start = std::time::Instant::now();
+    let ids = backup_ids
+        .iter()
+        .map(|(_, id)| id.clone())
+        .collect::<Vec<_>>();
     loop {
         if start.elapsed() > timeout {
             panic!(
@@ -112,7 +116,7 @@ async fn wait_for_backup_completion(
         }
 
         let statuses = client
-            .status(backup_ids, Duration::from_secs(3600))
+            .status(&ids, Duration::from_secs(3600))
             .await
             .expect("Failed to fetch backup status");
 
@@ -277,7 +281,7 @@ async fn test_backup_single_table_to_s3() {
 
     let backup_ids = client.backup(cfg).await.expect("Backup should succeed");
     assert_eq!(backup_ids.len(), 1, "Should return one backup ID per table");
-    assert!(!backup_ids[0].is_empty(), "Backup ID should not be empty");
+    assert!(!backup_ids[0].1.is_empty(), "Backup ID should not be empty");
 
     let statuses = wait_for_backup_completion(&client, &backup_ids, Duration::from_secs(30)).await;
     assert_eq!(statuses.len(), 1);
@@ -398,7 +402,7 @@ async fn test_status_after_backup() {
     let statuses = wait_for_backup_completion(&client, &backup_ids, Duration::from_secs(30)).await;
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].status.to_string(), "BACKUP_CREATED");
-    assert_eq!(statuses[0].id, backup_ids[0]);
+    assert_eq!(statuses[0].id, backup_ids[0].1);
 }
 
 // ==================== Restore from S3 Tests ====================
@@ -685,9 +689,14 @@ async fn test_full_backup_restore_workflow() {
             .collect::<Vec<_>>()
     );
 
+    let ids = backup_ids
+        .iter()
+        .map(|(_, id)| id.clone())
+        .collect::<Vec<_>>();
+
     // Verify status reports correct info
     let final_statuses = client
-        .status(&backup_ids, Duration::from_secs(3600))
+        .status(&ids, Duration::from_secs(3600))
         .await
         .expect("Status should work");
     assert_eq!(final_statuses.len(), 2);
@@ -1014,7 +1023,7 @@ async fn test_list_tables_scoped_to_source_db() {
         .await
         .expect("Backup B should succeed");
 
-    let all_ids: Vec<String> = backup_ids_a.into_iter().chain(backup_ids_b).collect();
+    let all_ids: Vec<(String, String)> = backup_ids_a.into_iter().chain(backup_ids_b).collect();
     let statuses = wait_for_backup_completion(&_client, &all_ids, Duration::from_secs(30)).await;
     assert!(
         statuses

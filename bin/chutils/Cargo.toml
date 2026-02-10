@@ -1,5 +1,5 @@
 [package]
-name = "cli"
+name = "chutils"
 version.workspace = true
 edition.workspace = true
 
@@ -8,6 +8,9 @@ tokio = { workspace = true }
 clap = { workspace = true }
 eyre = { workspace = true }
 tracing = { workspace = true }
-migration = { workspace = true, features = ["clap"] }
+migration = { workspace = true, features = ["clap", "rustls-tls"] }
 tracing-subscriber = { workspace = true }
 ch = { workspace = true }
+backup = { workspace = true, features = ["clap", "rustls-tls"] }
+human_bytes = { workspace = true, features = ["fast"] }
+humantime = { workspace = true }

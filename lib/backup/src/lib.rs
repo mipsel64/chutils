@@ -17,12 +17,12 @@ pub trait Status: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait Backup: Send + Sync {
-    async fn backup(&self, config: BackupConfig) -> Result<Vec<String>, Error>;
+    async fn backup(&self, config: BackupConfig) -> Result<Vec<(String, String)>, Error>;
 }
 
 #[async_trait::async_trait]
 pub trait Restore: Send + Sync {
-    async fn restore(&self, config: RestoreConfig) -> Result<Vec<String>, Error>;
+    async fn restore(&self, config: RestoreConfig) -> Result<Vec<(String, String)>, Error>;
 }
 
 #[derive(Clone)]
@@ -40,7 +40,7 @@ impl Client {
 
 #[async_trait::async_trait]
 impl Backup for Client {
-    async fn backup(&self, cfg: BackupConfig) -> Result<Vec<String>, Error> {
+    async fn backup(&self, cfg: BackupConfig) -> Result<Vec<(String, String)>, Error> {
         cfg.validate()?;
 
         let BackupConfig {
@@ -135,7 +135,7 @@ impl Backup for Client {
             }
 
             let backup_id: String = query.fetch_one().await.map_err(Error::ClickhouseError)?;
-            ret.push(backup_id);
+            ret.push((table.to_string(), backup_id));
         }
         Ok(ret)
     }
@@ -143,7 +143,7 @@ impl Backup for Client {
 
 #[async_trait::async_trait]
 impl Restore for Client {
-    async fn restore(&self, cfg: RestoreConfig) -> Result<Vec<String>, Error> {
+    async fn restore(&self, cfg: RestoreConfig) -> Result<Vec<(String, String)>, Error> {
         cfg.validate()?;
 
         let RestoreConfig {
@@ -222,7 +222,7 @@ impl Restore for Client {
         buffer.push_str(&options_str);
         buffer.push_str(" ASYNC");
 
-        let mut ret: Vec<String> = Vec::with_capacity(tables.len());
+        let mut ret: Vec<(String, String)> = Vec::with_capacity(tables.len());
 
         for table in &tables {
             tracing::info!(" - Table '{}'", table);
@@ -256,7 +256,7 @@ impl Restore for Client {
             }
 
             let backup_id: String = query.fetch_one().await.map_err(Error::ClickhouseError)?;
-            ret.push(backup_id);
+            ret.push((table.to_string(), backup_id));
         }
 
         Ok(ret)
@@ -362,6 +362,20 @@ pub struct BackupStatus {
 
     #[serde(default)]
     pub error: String,
+}
+
+impl BackupStatus {
+    pub fn progress(&self) -> f64 {
+        if self.total_size == 0 {
+            0.0
+        } else {
+            (self.bytes_read as f64 / self.total_size as f64) * 100.0
+        }
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.end_time > self.start_time
+    }
 }
 
 #[derive(Debug, Clone)]

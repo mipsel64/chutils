@@ -1,13 +1,12 @@
-use clap::Parser;
 use eyre::Context;
 use migration::Migration;
-use tracing_subscriber::EnvFilter;
 
 #[derive(clap::Parser)]
-struct Cli {
+pub struct Command {
     /// ClickHouse server URL (e.g., http://localhost:8123)
     #[clap(
         long = "clickhouse-url",
+        short = 'c',
         env = "CLICKHOUSE_URL",
         default_value = "",
         global = true
@@ -15,27 +14,43 @@ struct Cli {
     pub url: String,
 
     /// ClickHouse username for authentication
-    #[clap(long = "clickhouse-user", env = "CLICKHOUSE_USER", global = true)]
+    #[clap(
+        long = "clickhouse-user",
+        short = 'u',
+        env = "CLICKHOUSE_USER",
+        global = true
+    )]
     pub username: Option<String>,
 
     /// ClickHouse password for authentication
     #[clap(
         long = "clickhouse-password",
+        short = 'p',
         env = "CLICKHOUSE_PASSWORD",
         global = true
     )]
     pub password: Option<String>,
 
     /// ClickHouse database name to use
-    #[clap(long = "clickhouse-db", env = "CLICKHOUSE_DB", global = true)]
+    #[clap(
+        long = "clickhouse-db",
+        short = 'd',
+        env = "CLICKHOUSE_DB",
+        global = true
+    )]
     pub database: Option<String>,
 
     /// Additional ClickHouse request options (space-delimited key=value pairs)
-    #[clap(long = "clickhouse-option", env = "CLICKHOUSE_OPTIONS", value_parser = ch::parse_request_options, global = true, value_delimiter = ' ')]
+    #[clap(long = "clickhouse-option", short='o', env = "CLICKHOUSE_OPTIONS", value_parser = ch::parse_request_options, global = true, value_delimiter = ',')]
     pub options: Vec<(String, String)>,
 
     /// Directory path containing migration files
-    #[clap(long, env = "MIGRATION_SOURCE", default_value = "migrations/")]
+    #[clap(
+        long,
+        short = 's',
+        env = "MIGRATION_SOURCE",
+        default_value = "migrations/"
+    )]
     pub source: String,
 
     #[clap(subcommand)]
@@ -87,77 +102,66 @@ enum Commands {
     },
 }
 
-async fn run() -> eyre::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+impl Command {
+    pub async fn execute(self) -> eyre::Result<()> {
+        let Command {
+            username,
+            password,
+            url,
+            database,
+            options,
+            source,
+            command,
+        } = self;
 
-    let Cli {
-        username,
-        password,
-        url,
-        database,
-        options,
-        source,
-        command,
-    } = Cli::parse();
+        if let Commands::Add {
+            name,
+            reversible,
+            simple,
+        } = command
+        {
+            return add(&source, &name, reversible, simple).await;
+        }
 
-    if let Commands::Add {
-        name,
-        reversible,
-        simple,
-    } = command
-    {
-        return add(&source, &name, reversible, simple).await;
-    }
+        if url.is_empty() {
+            eyre::bail!("--clickhouse-url must be specified");
+        }
 
-    if url.is_empty() {
-        eyre::bail!("--clickhouse-url must be specified");
-    }
+        let builder = ch::Builder::new(url)
+            .with_username(username)
+            .with_password(password)
+            .with_database(database)
+            .with_options(options);
 
-    let builder = ch::Builder::new(url)
-        .with_username(username)
-        .with_password(password)
-        .with_database(database)
-        .with_options(options);
+        let ch_client = builder
+            .to_client()
+            .wrap_err_with(|| "Failed to build ClickHouse client")?;
 
-    let ch_client = builder
-        .to_client()
-        .wrap_err_with(|| "Failed to build ClickHouse client")?;
+        let migrator = migration::Migrator::from_client(ch_client);
 
-    let migrator = migration::Migrator::from_client(ch_client);
+        migrator
+            .ping()
+            .await
+            .wrap_err_with(|| "Failed to ping ClickHouse")?;
 
-    migrator
-        .ping()
-        .await
-        .wrap_err_with(|| "Failed to ping ClickHouse")?;
+        migrator.ensure_migrations_table().await?;
 
-    migrator.ensure_migrations_table().await?;
+        match command {
+            Commands::Up {
+                dry_run,
+                ignore_missing,
+                target_version,
+            } => up(&migrator, &source, dry_run, ignore_missing, target_version).await?,
+            Commands::Down {
+                dry_run,
+                ignore_missing,
+                target_version,
+            } => down(&migrator, &source, dry_run, ignore_missing, target_version).await?,
+            Commands::Info { ignore_missing } => info(&migrator, &source, ignore_missing).await?,
+            _ => unreachable!(),
+        }
 
-    match command {
-        Commands::Up {
-            dry_run,
-            ignore_missing,
-            target_version,
-        } => up(&migrator, &source, dry_run, ignore_missing, target_version).await?,
-        Commands::Down {
-            dry_run,
-            ignore_missing,
-            target_version,
-        } => down(&migrator, &source, dry_run, ignore_missing, target_version).await?,
-        Commands::Info { ignore_missing } => info(&migrator, &source, ignore_missing).await?,
-        _ => unreachable!(),
-    }
-
-    Ok(())
-}
-
-#[tokio::main]
-async fn main() {
-    if let Err(err) = run().await {
-        tracing::error!(error=?err, "Execute migration failed");
-        eprintln!("Execute migration failed, got error: {}", err.root_cause());
-        std::process::exit(1);
+        Ok(())
     }
 }
 
