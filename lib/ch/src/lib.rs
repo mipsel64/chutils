@@ -133,7 +133,7 @@ impl Builder {
 impl ClickhouseExtension for clickhouse::Client {
     async fn list_databases(&self) -> Result<Vec<String>, ClickhouseError> {
         let query = self
-            .query("SELECT name from system.database WHERE name NOT IN ? ORDER BY NAME")
+            .query("SELECT name from system.databases WHERE name NOT IN ? ORDER BY name")
             .bind(IGNORE_TABLES);
         let ret: Vec<String> = query.fetch_all().await?;
         Ok(ret)

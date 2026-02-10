@@ -3,6 +3,7 @@ mod error;
 use std::sync::Arc;
 
 use ch::{ClickhouseExtension, clickhouse};
+use clickhouse::sql::Identifier;
 pub use error::Error;
 
 #[async_trait::async_trait]
@@ -42,6 +43,13 @@ impl Backup for Client {
     async fn backup(&self, cfg: BackupConfig) -> Result<Vec<String>, Error> {
         cfg.validate()?;
 
+        let BackupConfig {
+            db,
+            tables,
+            backup_to,
+            options,
+        } = cfg;
+
         // Verify database exists
         let dbs = self
             .inner
@@ -49,42 +57,50 @@ impl Backup for Client {
             .await
             .map_err(Error::ClickhouseError)?;
 
-        if !dbs.contains(&cfg.db) {
+        if !dbs.contains(&db) {
             return Err(Error::InvalidInput(format!(
                 "Database '{}' does not exist",
-                cfg.db
+                db
             )));
         }
 
         // Verify tables exist
-        let tables = self
+        let avail_tables = self
             .inner
-            .list_tables(&cfg.db)
+            .list_tables(&db)
             .await
             .map_err(Error::ClickhouseError)?;
 
-        if !cfg.tables.is_empty() {
-            for table in &cfg.tables {
-                if !tables.contains(table) {
+        // If no tables specified, backup all tables found
+        let tables = if tables.is_empty() {
+            avail_tables
+        } else {
+            // Verify specified tables exist in the database
+            for table in &tables {
+                if !avail_tables.contains(table) {
                     return Err(Error::InvalidInput(format!(
-                        "Table '{}' does not exist in database '{}'",
-                        table, cfg.db
+                        "Table '{}' not found in database '{}'",
+                        table, db
                     )));
                 }
             }
-        }
+            tables
+        };
 
-        let options_str = if !cfg.options.is_empty() {
-            format!(" SETTINGS {}", cfg.options.join(" "))
+        let options_str = if !options.is_empty() {
+            format!(" SETTINGS {}", options.join(","))
         } else {
             "".to_string()
         };
 
+        let base_url = backup_to.s3_url().unwrap_or_default();
+
+        let mut ret = Vec::with_capacity(tables.len());
+        tracing::info!("Starting backup for database '{}'", db);
+
         let mut buffer = "BACKUP TABLE ?.? TO ".to_string();
 
-        let url = cfg.backup_to.s3_url().unwrap_or_default();
-
-        match &cfg.backup_to {
+        match &backup_to {
             StoreMethod::S3 { .. } => {
                 buffer.push_str("S3(?, ?, ?)");
             }
@@ -96,28 +112,47 @@ impl Backup for Client {
             }
         }
 
-        buffer.push_str(" ASYNC"); // Always use ASYNC to avoid blocking the client connection
         buffer.push_str(&options_str);
+        buffer.push_str(" ASYNC");
 
-        let mut ret = Vec::with_capacity(tables.len());
-        tracing::info!("Starting backup for database '{}'", cfg.db);
-        for table in &cfg.tables {
+        for table in &tables {
             tracing::info!(" - Table '{}'", table);
-            let mut query = self.inner.query(&buffer).bind(&cfg.db).bind(table);
 
-            match &cfg.backup_to {
+            let mut query = self
+                .inner
+                .query(&buffer)
+                .bind(Identifier(&db))
+                .bind(Identifier(table));
+
+            match &backup_to {
                 StoreMethod::S3 {
                     access_key,
                     secret_key,
                     ..
                 } => {
-                    query = query.bind(&url).bind(access_key).bind(secret_key);
+                    let url = format!(
+                        "{}/{}/{}",
+                        base_url.trim_end_matches('/'),
+                        db.trim_end_matches('/'),
+                        table.trim_end_matches('/')
+                    );
+                    query = query.bind(url).bind(access_key).bind(secret_key);
                 }
                 StoreMethod::Disk { name, path } => {
-                    query = query.bind(name).bind(path);
+                    query = query.bind(name).bind(format!(
+                        "{}/{}/{}",
+                        path.trim_end_matches('/'),
+                        db.trim_end_matches('/'),
+                        table.trim_end_matches('/')
+                    ));
                 }
                 StoreMethod::File(path) => {
-                    query = query.bind(path);
+                    query = query.bind(format!(
+                        "{}/{}/{}",
+                        path.trim_end_matches('/'),
+                        db.trim_end_matches('/'),
+                        table.trim_end_matches('/')
+                    ));
                 }
             }
 
@@ -144,35 +179,18 @@ impl Restore for Client {
 
         let target_db = target_db.unwrap_or_else(|| source_db.clone());
 
-        let avail_tables = restore_from.list_tables(&self.inner, &target_db).await?;
-
         if tables.is_empty() {
             return Err(Error::InvalidInput(
-                "No tables found in the backup source".to_string(),
+                "At least one table must be specified for restore".to_string(),
             ));
         }
 
         tracing::info!(
-            "Found {} table(s) in backup source for database '{}'",
+            "Restoring {} table(s) into database '{}' from source '{}'",
             tables.len(),
-            target_db
+            target_db,
+            source_db
         );
-
-        // If no tables specified, restore all tables found
-        let tables_to_restore = if tables.is_empty() {
-            tables
-        } else {
-            // Verify specified tables exist in the backup
-            for table in &tables {
-                if !avail_tables.contains(table) {
-                    return Err(Error::InvalidInput(format!(
-                        "Table '{}' not found in backup source",
-                        table
-                    )));
-                }
-            }
-            tables
-        };
 
         if let Some(mode) = mode {
             match mode {
@@ -187,12 +205,23 @@ impl Restore for Client {
         }
 
         let options_str = if !options.is_empty() {
-            format!(" SETTINGS {}", options.join(" "))
+            format!(" SETTINGS {}", options.join(","))
         } else {
             "".to_string()
         };
 
-        let mut buffer = "RESTORE TABLE ?.? FROM ".to_string();
+        let base_url = restore_from.s3_url().unwrap_or_default();
+
+        // When restoring to a different database, we use:
+        //   RESTORE TABLE source_db.table AS target_db.table FROM S3(...)
+        // When restoring to the same database:
+        //   RESTORE TABLE db.table FROM S3(...)
+        let cross_db = target_db != source_db;
+        let mut buffer = if cross_db {
+            "RESTORE TABLE ?.? AS ?.? FROM ".to_string()
+        } else {
+            "RESTORE TABLE ?.? FROM ".to_string()
+        };
 
         match &restore_from {
             StoreMethod::S3 { .. } => {
@@ -206,39 +235,39 @@ impl Restore for Client {
             }
         }
 
-        let s3_url = restore_from
-            .s3_url()
-            .map(|url| {
-                format!(
-                    "{}/{}",
-                    url.trim_end_matches('/'),
-                    source_db.trim_end_matches('/')
-                )
-            })
-            .unwrap_or_default();
-
-        buffer.push_str(" ASYNC"); // Always use ASYNC to avoid blocking the client connection
         buffer.push_str(&options_str);
+        buffer.push_str(" ASYNC");
 
-        let mut ret: Vec<String> = Vec::with_capacity(tables_to_restore.len());
-        tracing::info!(
-            "Starting restore for '{}' from database '{}'",
-            target_db,
-            source_db
-        );
+        let mut ret: Vec<String> = Vec::with_capacity(tables.len());
 
-        for table in &tables_to_restore {
+        for table in &tables {
             tracing::info!(" - Table '{}'", table);
-            let mut query = self.inner.query(&buffer).bind(&target_db).bind(table);
 
+            let mut query = self.inner.query(&buffer);
+
+            // Bind source table identifiers
+            query = query.bind(Identifier(&source_db)).bind(Identifier(table));
+
+            // If cross-db, also bind target table identifiers
+            if cross_db {
+                query = query.bind(Identifier(&target_db)).bind(Identifier(table));
+            }
+
+            // The S3 URL for restore must match what backup() wrote:
+            // {base_url}/{source_db}/{table}
             match &restore_from {
                 StoreMethod::S3 {
                     access_key,
                     secret_key,
                     ..
                 } => {
-                    let url = format!("{}/{}", s3_url, table.trim_end_matches('/'));
-                    query = query.bind(&url).bind(access_key).bind(secret_key);
+                    let url = format!(
+                        "{}/{}/{}",
+                        base_url.trim_end_matches('/'),
+                        source_db.trim_end_matches('/'),
+                        table.trim_end_matches('/')
+                    );
+                    query = query.bind(url).bind(access_key).bind(secret_key);
                 }
                 StoreMethod::Disk { name, path } => {
                     query = query.bind(name).bind(format!(
@@ -273,21 +302,20 @@ impl Status for Client {
         backup_ids: &[String],
         since: std::time::Duration,
     ) -> Result<Vec<BackupStatus>, Error> {
-        let mut buffer = "SELECT
-                    id,
+        let mut buffer = "SELECT id,
                     name,
+                    query_id,
                     status,
-                    formatReadableSize(total_size) as total_size_fmt,
+                    total_size,
                     num_files,
                     files_read,
-                    formatReadableSize(bytes_read) as bytes_read_fmt,
-                    if(total_size > 0, bytes_read * 100.0 / total_size, 0.0) as progress_pct,
+                    bytes_read,
                     start_time,
                     end_time,
-                    if (end_time > start_time, dateDiff('second', start_time, end_time), dateDiff('second', start_time, now())) as duration_seconds,
                     error
                 FROM system.backups
-                WHERE start_time >= fromUnixTimestamp64Second(?)".to_string();
+                WHERE system.backups.start_time >= fromUnixTimestamp64Second(?)"
+            .to_string();
 
         if !backup_ids.is_empty() {
             buffer.push_str(" AND id IN ?");
@@ -302,10 +330,12 @@ impl Status for Client {
             query = query.bind(backup_ids);
         }
 
-        query
+        let ret = query
             .fetch_all()
             .await
-            .map_err(crate::Error::ClickhouseError)
+            .map_err(crate::Error::ClickhouseError)?;
+
+        Ok(ret)
     }
 }
 
@@ -318,20 +348,52 @@ impl TryFrom<ch::Builder> for Client {
     }
 }
 
+#[derive(
+    Debug, Clone, Copy, Eq, PartialEq, serde_repr::Serialize_repr, serde_repr::Deserialize_repr,
+)]
+#[repr(i8)]
+pub enum StatusStage {
+    CreatingBackup = 0,
+    BackupCreated = 1,
+    BackupFailed = 2,
+    Restoring = 3,
+    Restored = 4,
+    RestoreFailed = 5,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, clickhouse::Row)]
 pub struct BackupStatus {
+    #[serde(default)]
     pub id: String,
+
+    #[serde(default)]
     pub name: String,
-    pub status: String,
-    pub total_size_fmt: String,
+
+    #[serde(default)]
+    pub query_id: String,
+
+    pub status: StatusStage,
+
+    #[serde(default)]
+    pub total_size: u64,
+
+    #[serde(default)]
     pub num_files: u64,
-    pub file_read: u64,
-    pub bytes_read_fmt: String,
-    pub progress_pct: f32,
-    pub start_time: String,
-    pub end_time: Option<String>,
-    pub dureation_secs: Option<f64>,
-    pub error: Option<String>,
+
+    #[serde(default)]
+    pub files_read: u64,
+
+    #[serde(default)]
+    pub bytes_read: u64,
+
+    #[serde(with = "clickhouse::serde::chrono::datetime64::micros")]
+    pub start_time: chrono::DateTime<chrono::Utc>,
+
+    #[serde(with = "clickhouse::serde::chrono::datetime64::micros")]
+    pub end_time: chrono::DateTime<chrono::Utc>,
+
+    #[serde(default)]
+    pub error: String,
 }
 
 #[derive(Debug, Clone)]
@@ -562,57 +624,17 @@ impl StoreMethod {
             _ => None,
         }
     }
+}
 
-    async fn list_tables(
-        &self,
-        client: &clickhouse::Client,
-        db: &str,
-    ) -> Result<Vec<String>, Error> {
-        let mut buffer =
-            "SELECT DISTINCT arrayElement(splitByChar('/', _path), -2) AS table_name FROM "
-                .to_string();
-
+impl std::fmt::Display for StatusStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StoreMethod::S3 { .. } => {
-                buffer.push_str("s3('?', '?', '?') ");
-            }
-            StoreMethod::Disk { .. } => {
-                buffer.push_str("disk('?', '?') ");
-            }
-            StoreMethod::File(_) => {
-                buffer.push_str("file('?') ");
-            }
+            StatusStage::CreatingBackup => write!(f, "CREATING_BACKUP"),
+            StatusStage::BackupCreated => write!(f, "BACKUP_CREATED"),
+            StatusStage::BackupFailed => write!(f, "BACKUP_FAILED"),
+            StatusStage::Restoring => write!(f, "RESTORING"),
+            StatusStage::Restored => write!(f, "RESTORED"),
+            StatusStage::RestoreFailed => write!(f, "RESTORE_FAILED"),
         }
-
-        buffer.push_str("ORDER BY table_name");
-
-        let mut query = client.query(&buffer);
-        match self {
-            StoreMethod::S3 {
-                access_key,
-                secret_key,
-                ..
-            } => {
-                let url = format!(
-                    "{}/{}/*/.backup",
-                    self.s3_url().unwrap_or_default().trim_end_matches('/'),
-                    db
-                );
-                query = query.bind(url).bind(access_key).bind(secret_key);
-            }
-            StoreMethod::Disk { name, path } => {
-                query = query.bind(name).bind(format!(
-                    "{}/{}/*/.backup",
-                    path.trim_end_matches('/'),
-                    db
-                ));
-            }
-            StoreMethod::File(path) => {
-                query = query.bind(format!("{}/{}/*/.backup", path.trim_end_matches('/'), db));
-            }
-        }
-
-        let tables: Vec<String> = query.fetch_all().await.map_err(Error::ClickhouseError)?;
-        Ok(tables)
     }
 }

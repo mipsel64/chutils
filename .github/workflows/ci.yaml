@@ -33,6 +33,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      minio:
+        image: minio/minio:latest
+        ports:
+          - "9000:9000"
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        options: >-
+          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -49,11 +61,21 @@ jobs:
       - name: Run lint check
         run: cargo clippy --all-targets --all-features -- -D warnings && cargo fmt --all --check
 
+      - name: Create MinIO test bucket
+        run: |
+          curl -sf http://localhost:9000/minio/health/live || sleep 5
+          docker run --rm --network host \
+            -e MC_HOST_local=http://minioadmin:minioadmin@localhost:9000 \
+            minio/mc mb local/test-backups --ignore-existing
+
       - name: Run tests
         env:
           TEST_CLICKHOUSE_URL: http://localhost:8123
           TEST_CLICKHOUSE_USER: admin
           TEST_CLICKHOUSE_PASSWORD: admin
+          TEST_S3_URL: http://minio:9000/test-backups
+          TEST_S3_ACCESS_KEY: minioadmin
+          TEST_S3_SECRET_KEY: minioadmin
         run: cargo test
 
   docker:

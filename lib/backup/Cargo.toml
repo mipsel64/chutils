@@ -30,3 +30,5 @@ serde_repr = { workspace = true }
 tempfile = "3"
 ch = { workspace = true, features = ["testing"] }
 serial_test = { workspace = true }
+tokio = { workspace = true }
+clickhouse = { workspace = true }
