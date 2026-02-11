@@ -109,7 +109,13 @@ impl Builder {
             return Err(Error::EmptyUrl);
         }
 
-        let mut inner = clickhouse::Client::default().with_url(self.url);
+        let (product, version) = info::user_agent()
+            .split_once('/')
+            .unwrap_or(("chutils", "unknown"));
+
+        let mut inner = clickhouse::Client::default()
+            .with_url(self.url)
+            .with_product_info(product, version);
 
         if let Some(username) = self.username {
             inner = inner.with_user(username);

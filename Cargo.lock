@@ -101,7 +101,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "backup"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "ch",
@@ -162,11 +162,12 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "ch"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "clap",
  "clickhouse",
+ "info",
  "serde",
  "thiserror 2.0.18",
 ]
@@ -187,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "chutils"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "backup",
  "ch",
@@ -195,6 +196,7 @@ dependencies = [
  "eyre",
  "human_bytes",
  "humantime",
+ "info",
  "migration",
  "tokio",
  "tracing",
@@ -286,6 +288,26 @@ name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
+
+[[package]]
+name = "const_format"
+version = "0.2.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7faa7469a93a566e9ccc1c73fe783b4a65c274c5ace346038dca9c39fe0030ad"
+dependencies = [
+ "const_format_proc_macros",
+]
+
+[[package]]
+name = "const_format_proc_macros"
+version = "0.2.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d57c2eccfb16dbac1f4e61e206105db5820c9d26c3c472bc17c774259ef7744"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-xid",
+]
 
 [[package]]
 name = "core-foundation"
@@ -808,6 +830,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "info"
+version = "0.2.0"
+dependencies = [
+ "const_format",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -891,7 +920,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "migration"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "ch",

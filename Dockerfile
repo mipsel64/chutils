@@ -59,8 +59,12 @@ RUN --mount=type=cache,id=cargo-registry,target=$CARGO_HOME/registry,sharing=loc
 
 COPY . .
 
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+
 RUN --mount=type=cache,id=cargo-registry,target=$CARGO_HOME/registry,sharing=locked \
   --mount=type=cache,id=cargo-git,target=$CARGO_HOME/git,sharing=locked \
+  GIT_SHA="${GIT_SHA}" BUILD_TIME="${BUILD_TIME}" \
   cargo build --bin chutils --target $(cat rust_target.txt) --release && \
   mkdir -p /tmp/out && \
   cp target/$(cat rust_target.txt)/release/chutils /tmp/out/chutils

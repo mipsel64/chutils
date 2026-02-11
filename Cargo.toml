@@ -3,7 +3,7 @@ resolver = "2"
 members = ["bin/*", "lib/*"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "A CLI tool and Rust library for managing ClickHouse database migrations"
 license = "MIT"
@@ -16,6 +16,7 @@ exclude = ["/.github/", "/.gitignore"]
 migration = { path = "./lib/migration" }
 backup = { path = "./lib/backup" }
 ch = { path = "./lib/ch" }
+info = { path = "./lib/info" }
 
 tokio = { version = "1.49", features = ["full"] }
 tracing = "0.1"

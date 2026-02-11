@@ -14,3 +14,4 @@ ch = { workspace = true }
 backup = { workspace = true, features = ["clap", "rustls-tls"] }
 human_bytes = { workspace = true, features = ["fast"] }
 humantime = { workspace = true }
+info = { workspace = true }

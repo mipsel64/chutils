@@ -1,0 +1,13 @@
+[package]
+name = "info"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+authors.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[dependencies]
+const_format = "0.2.35"

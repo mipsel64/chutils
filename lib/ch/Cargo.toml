@@ -23,3 +23,4 @@ clickhouse = { workspace = true, features = ["chrono", "inserter"] }
 serde = { workspace = true, optional = true, features = ["derive"] }
 clap = { workspace = true, optional = true }
 thiserror = { workspace = true }
+info = { workspace = true }

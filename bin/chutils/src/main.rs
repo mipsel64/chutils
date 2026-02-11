@@ -7,6 +7,13 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
+#[command(name = "chutils")]
+pub struct CLI {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(clap::Subcommand)]
 pub enum Command {
     /// Run database migrations
     Migrate(migration::Command),
@@ -20,13 +27,22 @@ pub enum Command {
     Cluster(cluster::Command),
 }
 
+fn check_version_flag() -> bool {
+    std::env::args().any(|arg| arg == "--version" || arg == "-V")
+}
+
 async fn run() -> eyre::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let command = Command::parse();
-    match command {
+    if check_version_flag() {
+        println!("{}", info::version());
+        return Ok(());
+    }
+
+    let cli = CLI::parse();
+    match cli.command {
         Command::Migrate(cmd) => cmd.execute().await?,
         Command::Backup(cmd) => cmd.execute().await?,
         Command::Restore(cmd) => cmd.execute().await?,

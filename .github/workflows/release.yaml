@@ -53,14 +53,20 @@ jobs:
         with:
           key: ${{ matrix.target }}-v2
 
+      - name: Set build metadata
+        shell: bash
+        run: |
+          echo "GIT_SHA=${{ github.sha }}" >> $GITHUB_ENV
+          echo "BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
+
       - name: Build binary
-        run: cargo build --bin cli --release --target ${{ matrix.target }}
+        run: cargo build --bin chutils --release --target ${{ matrix.target }}
 
       - name: Prepare artifact
         shell: bash
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/cli dist/${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/chutils dist/${{ matrix.artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -111,6 +117,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp }}
 
   release:
     name: Create GitHub Release
