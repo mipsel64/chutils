@@ -548,7 +548,7 @@ chutils/
 
 ### Prerequisites
 
-- Rust 1.85+
+- Rust 1.89+
 - ClickHouse server (for integration tests)
 
 ### Building

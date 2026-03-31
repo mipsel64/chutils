@@ -3,7 +3,7 @@ resolver = "2"
 members = ["bin/*", "lib/*"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "A CLI tool and Rust library for managing ClickHouse database migrations"
 license = "MIT"
@@ -23,7 +23,7 @@ tracing = "0.1"
 eyre = "0.6"
 clap = { version = "4.5", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
-clickhouse = { version = "0.13", default-features = false }
+clickhouse = { version = "0.14", default-features = false }
 async-trait = { version = "0.1" }
 thiserror = "2"
 chrono = { version = "0.4" }

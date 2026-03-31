@@ -134,8 +134,9 @@ impl Backup for Client {
                 }
             }
 
-            let backup_id: String = query.fetch_one().await.map_err(Error::ClickhouseError)?;
-            ret.push((table.to_string(), backup_id));
+            let resp: BackupCommandResponse =
+                query.fetch_one().await.map_err(Error::ClickhouseError)?;
+            ret.push((table.to_string(), resp.id));
         }
         Ok(ret)
     }
@@ -255,8 +256,9 @@ impl Restore for Client {
                 }
             }
 
-            let backup_id: String = query.fetch_one().await.map_err(Error::ClickhouseError)?;
-            ret.push((table.to_string(), backup_id));
+            let resp: BackupCommandResponse =
+                query.fetch_one().await.map_err(Error::ClickhouseError)?;
+            ret.push((table.to_string(), resp.id));
         }
 
         Ok(ret)
@@ -327,6 +329,16 @@ pub enum StatusStage {
     Restoring = 3,
     Restored = 4,
     RestoreFailed = 5,
+    BackupCancelled = 6,
+    RestoreCancelled = 7,
+}
+
+/// Row returned by `BACKUP TABLE ... ASYNC` and `RESTORE TABLE ... ASYNC`.
+#[derive(Debug, Clone, serde::Deserialize, clickhouse::Row)]
+#[allow(dead_code)]
+struct BackupCommandResponse {
+    id: String,
+    status: StatusStage,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, clickhouse::Row)]
@@ -592,8 +604,7 @@ impl StoreMethod {
         client: &clickhouse::Client,
         source_db: &str,
     ) -> Result<Vec<String>, Error> {
-        let extract_expr =
-            concat!("replaceRegexpOne(_path, '.*/metadata/[^/]+/([^/]+)\\.sql$', '\\\\1')",);
+        let extract_expr = "replaceRegexpOne(_path, '.*/metadata/[^/]+/([^/]+)\\.sql$', '\\\\1')";
 
         match self {
             StoreMethod::S3 {
@@ -637,6 +648,8 @@ impl std::fmt::Display for StatusStage {
             StatusStage::Restoring => write!(f, "RESTORING"),
             StatusStage::Restored => write!(f, "RESTORED"),
             StatusStage::RestoreFailed => write!(f, "RESTORE_FAILED"),
+            StatusStage::BackupCancelled => write!(f, "BACKUP_CANCELLED"),
+            StatusStage::RestoreCancelled => write!(f, "RESTORE_CANCELLED"),
         }
     }
 }
