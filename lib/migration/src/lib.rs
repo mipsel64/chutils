@@ -211,7 +211,7 @@ impl Migration for Migrator {
             return Ok(pending);
         }
 
-        let mut insert = self.inner.insert::<MigrationInfo>("_ch_migrations")?;
+        let mut insert = self.inner.insert::<MigrationInfo>("_ch_migrations").await?;
 
         for mig in pending.iter_mut() {
             self.execute_migration(mig, true).await?;

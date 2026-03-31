@@ -74,10 +74,9 @@ pub async fn list_migrations(src: &str) -> Result<Vec<crate::MigrationFile>, cra
             .await
             .map(|e| e.is_file())
             .unwrap_or_default()
+            && let Some(file) = parse_migration_file(src, &entry.path())
         {
-            if let Some(file) = parse_migration_file(src, &entry.path()) {
-                files.push(file);
-            }
+            files.push(file);
         }
     }
 

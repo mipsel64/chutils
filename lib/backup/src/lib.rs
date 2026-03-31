@@ -592,8 +592,7 @@ impl StoreMethod {
         client: &clickhouse::Client,
         source_db: &str,
     ) -> Result<Vec<String>, Error> {
-        let extract_expr =
-            concat!("replaceRegexpOne(_path, '.*/metadata/[^/]+/([^/]+)\\.sql$', '\\\\1')",);
+        let extract_expr = "replaceRegexpOne(_path, '.*/metadata/[^/]+/([^/]+)\\.sql$', '\\\\1')";
 
         match self {
             StoreMethod::S3 {
