@@ -101,7 +101,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "backup"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "ch",
@@ -162,7 +162,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "ch"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "clap",
@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "chutils"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "backup",
  "ch",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "info"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "const_format",
 ]
@@ -920,7 +920,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "migration"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "ch",

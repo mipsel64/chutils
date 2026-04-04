@@ -41,7 +41,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 RUN rustup toolchain install
 RUN rustup target add $(cat rust_target.txt)
 
-RUN cargo install cargo-chef --locked
+RUN cargo install cargo-chef@0.1.75 --locked
 
 FROM base AS planner
 WORKDIR /app
