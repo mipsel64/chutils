@@ -109,29 +109,100 @@ impl Migrator {
     }
 }
 
+/// Split SQL content into individual queries, respecting comments and string literals.
+/// Splits on `;` only when not inside a string literal or comment.
+/// Line comments (`--`) and block comments (`/* */`) are stripped from output.
+fn split_queries(content: &str) -> Result<Vec<String>, Error> {
+    let mut queries = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = content.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Line comment: skip until end of line
+        if i + 1 < len && chars[i] == '-' && chars[i + 1] == '-' {
+            while i < len && chars[i] != '\n' {
+                i += 1;
+            }
+            if i < len {
+                current.push('\n');
+                i += 1;
+            }
+            continue;
+        }
+
+        // Block comment: skip until */, emit a space to preserve token separation
+        if i + 1 < len && chars[i] == '/' && chars[i + 1] == '*' {
+            i += 2;
+            while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            if i + 1 < len {
+                i += 2;
+            } else {
+                return Err(Error::InvalidInput("unterminated block comment".into()));
+            }
+            current.push(' ');
+            continue;
+        }
+
+        // String literal: consume until closing quote, handling escapes
+        if chars[i] == '\'' {
+            current.push(chars[i]);
+            i += 1;
+            while i < len {
+                if chars[i] == '\'' {
+                    current.push(chars[i]);
+                    i += 1;
+                    // Escaped quote ('')
+                    if i < len && chars[i] == '\'' {
+                        current.push(chars[i]);
+                        i += 1;
+                        continue;
+                    }
+                    break;
+                }
+                if chars[i] == '\\' && i + 1 < len {
+                    current.push(chars[i]);
+                    current.push(chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                current.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+
+        // Semicolon: query separator
+        if chars[i] == ';' {
+            let trimmed = current.trim().to_string();
+            if !trimmed.is_empty() {
+                queries.push(trimmed);
+            }
+            current.clear();
+            i += 1;
+            continue;
+        }
+
+        current.push(chars[i]);
+        i += 1;
+    }
+
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        queries.push(trimmed);
+    }
+
+    Ok(queries)
+}
+
 impl Migrator {
     async fn execute_migration(&self, info: &MigrationInfo, is_up: bool) -> Result<(), Error> {
         let raw = tokio::fs::read(&info.file_path(is_up)).await?;
         let content = String::from_utf8_lossy(&raw).to_string();
-
-        // Process content: remove full-line comments, then split by semicolon
-        let queries: Vec<String> = content
-            .split(';')
-            .map(|stmt| {
-                // For each statement, filter out comment-only lines but keep inline comments
-                // (ClickHouse handles inline comments fine)
-                stmt.lines()
-                    .filter(|line| {
-                        let trimmed = line.trim();
-                        // Keep non-empty lines that don't start with --
-                        !trimmed.is_empty() && !trimmed.starts_with("--")
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let queries = split_queries(&content)?;
 
         for query in queries {
             self.inner.query(&query).execute().await.inspect_err(|err| {
@@ -1049,5 +1120,283 @@ mod tests {
 
         let query = ddl_recording.query().await;
         assert!(query.contains("DROP TABLE test"));
+    }
+
+    // ==================== split_queries tests ====================
+
+    #[test]
+    fn test_split_queries_basic() {
+        let input = "CREATE TABLE foo (id Int32) ENGINE = Memory;\nINSERT INTO foo VALUES (1);";
+        let result = split_queries(input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "CREATE TABLE foo (id Int32) ENGINE = Memory");
+        assert_eq!(result[1], "INSERT INTO foo VALUES (1)");
+    }
+
+    #[test]
+    fn test_split_queries_trailing_no_semicolon() {
+        let result = split_queries("SELECT 1").unwrap();
+        assert_eq!(result, vec!["SELECT 1"]);
+    }
+
+    #[test]
+    fn test_split_queries_empty_input() {
+        let result = split_queries("").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_split_queries_only_comments() {
+        let result = split_queries("-- just a comment\n-- another comment\n").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_split_queries_semicolon_in_line_comment() {
+        let input = "-- Setup; initialize tables\nCREATE TABLE foo (id Int32) ENGINE = Memory;";
+        let result = split_queries(input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "CREATE TABLE foo (id Int32) ENGINE = Memory");
+    }
+
+    #[test]
+    fn test_split_queries_semicolon_in_block_comment() {
+        let input = "/* Setup; initialize tables */\nCREATE TABLE foo (id Int32) ENGINE = Memory;";
+        let result = split_queries(input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "CREATE TABLE foo (id Int32) ENGINE = Memory");
+    }
+
+    #[test]
+    fn test_split_queries_semicolon_in_string_literal() {
+        let input = "INSERT INTO foo VALUES ('hello; world');";
+        let result = split_queries(input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "INSERT INTO foo VALUES ('hello; world')");
+    }
+
+    #[test]
+    fn test_split_queries_escaped_quotes_in_string() {
+        let input = "INSERT INTO foo VALUES ('it''s a test; really');";
+        let result = split_queries(input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "INSERT INTO foo VALUES ('it''s a test; really')");
+    }
+
+    #[test]
+    fn test_split_queries_backslash_escaped_quote() {
+        let input = r"INSERT INTO foo VALUES ('it\'s; here');";
+        let result = split_queries(input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], r"INSERT INTO foo VALUES ('it\'s; here')");
+    }
+
+    #[test]
+    fn test_split_queries_multiline_block_comment() {
+        let input = "/*\n * Multi-line comment;\n * with semicolons;\n */\nSELECT 1;";
+        let result = split_queries(input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "SELECT 1");
+    }
+
+    #[test]
+    fn test_split_queries_complex_migration() {
+        let input = "\
+-- Migration: create users table
+-- Author: test; date: 2024-01-01
+CREATE TABLE users (
+    id UInt64,
+    name String
+) ENGINE = MergeTree()
+ORDER BY id;
+
+/* Insert default admin user;
+   This is important; don't remove */
+INSERT INTO users VALUES (1, 'admin; superuser');
+
+-- Done; cleanup
+SELECT 1;
+";
+        let result = split_queries(input).unwrap();
+        assert_eq!(result.len(), 3);
+        assert!(result[0].starts_with("CREATE TABLE users"));
+        assert_eq!(
+            result[1],
+            "INSERT INTO users VALUES (1, 'admin; superuser')"
+        );
+        assert_eq!(result[2], "SELECT 1");
+    }
+
+    #[test]
+    fn test_split_queries_strips_comments_between_statements() {
+        let input = "SELECT 1;\n-- comment between\nSELECT 2;";
+        let result = split_queries(input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "SELECT 1");
+        assert_eq!(result[1], "SELECT 2");
+    }
+
+    #[test]
+    fn test_split_queries_whitespace_only_segments() {
+        let input = "SELECT 1;   \n  \n  ; SELECT 2;";
+        let result = split_queries(input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "SELECT 1");
+        assert_eq!(result[1], "SELECT 2");
+    }
+
+    #[test]
+    fn test_split_queries_inline_block_comment_preserves_spacing() {
+        let input = "SELECT 1/*x*/FROM t;";
+        let result = split_queries(input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "SELECT 1 FROM t");
+    }
+
+    #[test]
+    fn test_split_queries_unterminated_block_comment_error() {
+        let input = "SELECT 1; /* unterminated comment\nSELECT 2;";
+        let result = split_queries(input);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_split_queries_real_world_migration() {
+        let input = r#"
+-- ============================================================================
+-- app_configs
+-- Stores the live configuration per service.
+-- ReplacingMergeTree collapses older versions after background merges;
+-- always query with FINAL to read the latest row.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS app_configs (
+    service      Enum8('API' = 1, 'Worker' = 2, 'Scheduler' = 3),
+    config_json  String,                  -- full JSON configuration blob
+    updated_at   DateTime64(3, 'UTC')     -- version column for ReplacingMergeTree
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (service);
+
+-- ============================================================================
+-- jobs
+-- One logical row per (service, job_id). State transitions are modelled as
+-- INSERT of a new row with a newer updated_at; ReplacingMergeTree keeps only
+-- the latest version after merges. Use FINAL for consistent reads.
+--
+-- Lifecycle:
+--   Queued (pending)  ──▶  Running  (started)
+--                     └──▶  is_cancelled = 1
+--   Immediate         ──▶  (no pending phase; runs to completion)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS jobs (
+    service          Enum8('API' = 1, 'Worker' = 2, 'Scheduler' = 3),
+    job_id           String,                  -- e.g. '20261231235959'
+    mode             Enum8('Queued' = 1, 'Running' = 2, 'Immediate' = 3),
+    is_cancelled     UInt8   DEFAULT 0,       -- 1 = cancelled (only meaningful for Queued)
+    config_snapshot  String  DEFAULT '',      -- snapshot of config at creation time
+    total_items      UInt32  DEFAULT 0,
+    success_count    UInt32  DEFAULT 0,
+    failure_count    UInt32  DEFAULT 0,
+    skipped_count    UInt32  DEFAULT 0,
+    total_cost_usd   Float64 DEFAULT 0,
+    notify_id        Nullable(UInt64),
+    created_at       DateTime64(3, 'UTC'),    -- job.created_at_ms
+    updated_at       DateTime64(3, 'UTC')     -- version column for ReplacingMergeTree
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (service, job_id);
+
+-- ============================================================================
+-- job_tasks
+-- Denormalized task-level rows for each job. Written once per task, never
+-- updated. ClickHouse native TTL handles automatic expiry:
+--   - Queued jobs:   expires_at = now + queue_deadline     (2h)
+--   - Finished jobs: expires_at = now + task_log_retention (7d)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS job_tasks (
+    service            Enum8('API' = 1, 'Worker' = 2, 'Scheduler' = 3),
+    job_id             String,
+    task_key           String,                  -- unique identifier
+    action             LowCardinality(String),  -- Process | Skip | Retry
+    input_payload      String  DEFAULT '',      -- serialised input
+    output_payload     Nullable(String),        -- serialised output
+    cost_usd           Float64 DEFAULT 0,
+    duration_ms        UInt64  DEFAULT 0,
+    error_type         Nullable(String),        -- error variant name
+    error_message      Nullable(String),        -- error serialised content
+    note               Nullable(String),
+    created_at         DateTime64(3, 'UTC'),    -- task.created_at_ms
+    expires_at         DateTime('UTC')          -- for native TTL
+) ENGINE = MergeTree()
+ORDER BY (service, job_id, task_key)
+TTL expires_at DELETE
+SETTINGS merge_with_ttl_timeout = 3600;
+
+-- ============================================================================
+-- audit_events
+-- Immutable audit trail for each job (e.g. config changes, manual overrides).
+-- Same TTL strategy as job_tasks.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS audit_events (
+    service            Enum8('API' = 1, 'Worker' = 2, 'Scheduler' = 3),
+    job_id             String,
+    event_type         LowCardinality(String),  -- ConfigChange | Override | Rollback
+    actor              String  DEFAULT '',       -- who triggered the event
+    payload            String  DEFAULT '',
+    success            UInt8   DEFAULT 0,        -- boolean: 1 = success, 0 = failure
+    err                Nullable(String),
+    created_at         DateTime64(3, 'UTC'),
+    expires_at         DateTime('UTC')
+) ENGINE = MergeTree()
+ORDER BY (service, job_id, created_at)
+TTL expires_at DELETE
+SETTINGS merge_with_ttl_timeout = 3600;
+"#;
+        let result = split_queries(input).unwrap();
+        assert_eq!(
+            result.len(),
+            4,
+            "Expected 4 CREATE TABLE statements, got: {}",
+            result.len()
+        );
+        assert!(
+            result[0].starts_with("CREATE TABLE IF NOT EXISTS app_configs"),
+            "query[0]: {}",
+            &result[0][..60]
+        );
+        assert!(
+            result[1].starts_with("CREATE TABLE IF NOT EXISTS jobs"),
+            "query[1]: {}",
+            &result[1][..60]
+        );
+        assert!(
+            result[2].starts_with("CREATE TABLE IF NOT EXISTS job_tasks"),
+            "query[2]: {}",
+            &result[2][..60]
+        );
+        assert!(
+            result[3].starts_with("CREATE TABLE IF NOT EXISTS audit_events"),
+            "query[3]: {}",
+            &result[3][..60]
+        );
+
+        // Verify inline comments are stripped but Enum string literals with quotes are preserved
+        assert!(
+            result[0].contains("'API' = 1"),
+            "Enum values must be preserved"
+        );
+        assert!(
+            !result[0].contains("-- full JSON"),
+            "Inline comments should be stripped"
+        );
+
+        // Verify the SETTINGS clause stays attached to its CREATE TABLE (not split off)
+        assert!(
+            result[2].contains("SETTINGS merge_with_ttl_timeout = 3600"),
+            "SETTINGS must stay with CREATE TABLE"
+        );
+        assert!(
+            result[3].contains("SETTINGS merge_with_ttl_timeout = 3600"),
+            "SETTINGS must stay with CREATE TABLE"
+        );
     }
 }
