@@ -23,10 +23,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        run: echo "channel=$(grep '^channel' rust-toolchain.toml | sed 's/.*"\(.*\)"/\1/')" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.89
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           components: rustfmt, clippy
 
       - name: Cache dependencies
