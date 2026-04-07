@@ -49,7 +49,8 @@ pub struct Command {
         long,
         short = 's',
         env = "MIGRATION_SOURCE",
-        default_value = "migrations/"
+        default_value = "migrations/",
+        global = true
     )]
     pub source: String,
 
