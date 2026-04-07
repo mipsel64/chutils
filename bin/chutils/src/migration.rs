@@ -64,10 +64,10 @@ enum Commands {
         /// Name of the migration (will be prefixed with version number)
         name: String,
         /// Create a reversible migration with up/down scripts
-        #[clap(long, short = 'r')]
+        #[clap(long, short = 'R')]
         reversible: bool,
         /// Create a simple migration with a single script
-        #[clap(long, short = 's')]
+        #[clap(long, short = 'S')]
         simple: bool,
     },
     /// Display migration status information
