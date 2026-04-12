@@ -17,6 +17,7 @@ migration = { path = "./lib/migration" }
 backup = { path = "./lib/backup" }
 ch = { path = "./lib/ch" }
 info = { path = "./lib/info" }
+inserter = { path = "./lib/inserter" }
 
 tokio = { version = "1.49", features = ["full"] }
 tracing = "0.1"
@@ -33,3 +34,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = { version = "0.3" }
 human_bytes = "0.4"
 humantime = "2"
+async-channel = "2"
+tokio-util = "0.7"
