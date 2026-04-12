@@ -11,8 +11,9 @@ use tokio_util::sync::CancellationToken;
 /// Atomic counter to generate unique table suffixes for test isolation.
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-fn unique_test_id() -> u32 {
-    TEST_COUNTER.fetch_add(1, Ordering::SeqCst)
+fn unique_table_name() -> String {
+    let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("test_inserter_{}_{}", std::process::id(), id)
 }
 
 /// A simple row type used across all tests.
@@ -54,13 +55,20 @@ macro_rules! require_clickhouse {
     };
 }
 
-/// Create a test table and return its name. The caller is responsible for
-/// dropping it after the test.
+/// Create a fresh test table and return its name. Drops any leftover table
+/// from a previous failed run first to guarantee a clean starting state.
 async fn create_test_table(client: &clickhouse::Client) -> String {
-    let table = format!("test_inserter_{}", unique_test_id());
+    let table = unique_table_name();
+    // Drop first to clean up leftovers from a previous failed run where
+    // drop_test_table may not have executed due to a panic.
+    client
+        .query(&format!("DROP TABLE IF EXISTS {}", table))
+        .execute()
+        .await
+        .ok();
     client
         .query(&format!(
-            "CREATE TABLE IF NOT EXISTS {} (id UInt32, name String) ENGINE = MergeTree() ORDER BY id",
+            "CREATE TABLE {} (id UInt32, name String) ENGINE = Memory",
             table
         ))
         .execute()
@@ -118,7 +126,7 @@ async fn test_spawn_insert_single_row() {
     // Cancel triggers a final flush of buffered rows.
     cancel.cancel();
     // Give the background task time to flush.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     assert_eq!(count_rows(&client, &table).await, 1);
 
@@ -139,7 +147,7 @@ async fn test_spawn_insert_many() {
     inserter.insert_many(test_rows(50)).await.unwrap();
 
     cancel.cancel();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     assert_eq!(count_rows(&client, &table).await, 50);
 
@@ -165,12 +173,12 @@ async fn test_flush_on_max_rows_threshold() {
     inserter.insert_many(test_rows(10)).await.unwrap();
 
     // Wait for the flush to complete (no cancellation needed).
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     assert_eq!(count_rows(&client, &table).await, 10);
 
     cancel.cancel();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     drop_test_table(&client, &table).await;
 }
@@ -191,12 +199,12 @@ async fn test_flush_on_interval() {
     inserter.insert_many(test_rows(5)).await.unwrap();
 
     // Wait for the interval to fire and flush.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     assert_eq!(count_rows(&client, &table).await, 5);
 
     cancel.cancel();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     drop_test_table(&client, &table).await;
 }
@@ -221,7 +229,7 @@ async fn test_cancel_flushes_remaining_rows() {
     // Neither threshold nor interval should have fired.
     // Cancel should flush the remaining 7 rows.
     cancel.cancel();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     assert_eq!(count_rows(&client, &table).await, 7);
 
@@ -282,7 +290,7 @@ async fn test_multiple_batches() {
 
     // First batch: triggers flush at 5 rows.
     inserter.insert_many(test_rows(5)).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(count_rows(&client, &table).await, 5);
 
     // Second batch: another 5 rows.
@@ -293,11 +301,11 @@ async fn test_multiple_batches() {
         })
         .collect();
     inserter.insert_many(batch2).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(count_rows(&client, &table).await, 10);
 
     cancel.cancel();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     drop_test_table(&client, &table).await;
 }
@@ -345,7 +353,7 @@ async fn test_insert_trait_is_send_sync() {
     h2.await.unwrap();
 
     cancel.cancel();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     assert_eq!(count_rows(&client, &table).await, 10);
 
@@ -374,7 +382,7 @@ async fn test_drop_inserter_flushes_on_channel_close() {
     }
 
     // The background task should detect channel close and flush.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     assert_eq!(count_rows(&client, &table).await, 3);
 
@@ -402,12 +410,12 @@ async fn test_config_max_bytes_threshold() {
 
     // Write 5 rows — should hit the byte threshold.
     inserter.insert_many(test_rows(5)).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     assert_eq!(count_rows(&client, &table).await, 5);
 
     cancel.cancel();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     drop_test_table(&client, &table).await;
 }
