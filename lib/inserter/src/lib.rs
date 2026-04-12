@@ -92,12 +92,7 @@ impl Default for Config {
 
 #[async_trait::async_trait]
 pub trait Insert: Send + Sync {
-    type Row: clickhouse::Row
-        + Serialize
-        + for<'b> clickhouse::Row<Value<'b> = Self::Row>
-        + Send
-        + Sync
-        + 'static;
+    type Row: clickhouse::Row + Serialize + Send + Sync + 'static;
 
     async fn insert(&self, row: Self::Row) -> Result<()>;
     async fn insert_many(&self, rows: Vec<Self::Row>) -> Result<()>;
@@ -130,7 +125,7 @@ impl<T: Send + 'static> Inserter<T> {
 #[async_trait::async_trait]
 impl<T> Insert for Inserter<T>
 where
-    T: clickhouse::Row + Serialize + for<'b> clickhouse::Row<Value<'b> = T> + Send + Sync + 'static,
+    T: clickhouse::Row + Serialize + Send + Sync + 'static,
 {
     type Row = T;
 
@@ -154,7 +149,7 @@ pub struct NoInserter<T> {
 #[async_trait::async_trait]
 impl<T> Insert for NoInserter<T>
 where
-    T: clickhouse::Row + Serialize + for<'b> clickhouse::Row<Value<'b> = T> + Send + Sync + 'static,
+    T: clickhouse::Row + Serialize + Send + Sync + 'static,
 {
     type Row = T;
 
@@ -185,7 +180,7 @@ pub fn spawn<T>(
     cancel: CancellationToken,
 ) -> Arc<dyn Insert<Row = T>>
 where
-    T: clickhouse::Row + Serialize + for<'b> clickhouse::Row<Value<'b> = T>,
+    T: clickhouse::Row + Serialize,
     T: Send + Sync + 'static,
 {
     if config.max_rows.is_none() && config.max_bytes.is_none() && config.flush_interval.is_none() {
@@ -218,7 +213,7 @@ async fn run_background<T>(
     rx: async_channel::Receiver<T>,
     cancel: CancellationToken,
 ) where
-    T: clickhouse::Row + Serialize + for<'b> clickhouse::Row<Value<'b> = T>,
+    T: clickhouse::Row + Serialize,
     T: Send + Sync + 'static,
 {
     let flush_interval = config.flush_interval.unwrap_or(Duration::from_secs(1));
@@ -276,10 +271,12 @@ async fn run_background<T>(
             msg = rx.recv() => {
                 let Ok(row) = msg else {
                     // Channel closed — flush remainder.
-                    if !buffer.is_empty() &&
-                        let Err(err) = flush_with_retry(&client, table, &buffer, &config).await {
+                    if !buffer.is_empty() {
+                        if let Err(err) = flush_with_retry(&client, table, &buffer, &config).await {
                             tracing::error!(table, error = ?err, "Failed to flush rows on channel close");
+                        }
                     }
+
                     return;
                 };
 
@@ -309,16 +306,12 @@ fn should_flush<T>(buffer: &[T], row_size: usize, config: &Config) -> bool {
         return true;
     }
 
-    if let Some(max_rows) = config.max_rows
-        && buffer.len() >= max_rows
-    {
+    if matches!(config.max_rows, Some(max_rows) if max_rows >= buffer.len()) {
         return true;
     }
 
     let estimated_bytes = (buffer.len() * row_size) as u64;
-    if let Some(max_bytes) = config.max_bytes
-        && estimated_bytes >= max_bytes
-    {
+    if matches!(config.max_bytes, Some(max_bytes) if max_bytes >= estimated_bytes) {
         return true;
     }
 
@@ -337,7 +330,7 @@ async fn flush_with_retry<T>(
     cfg: &Config,
 ) -> Result<()>
 where
-    T: clickhouse::Row + Serialize + 'static + for<'b> clickhouse::Row<Value<'b> = T>,
+    T: clickhouse::Row + Serialize + 'static,
 {
     if buffer.is_empty() {
         return Ok(());
@@ -383,9 +376,9 @@ where
 
 async fn try_flush<T>(client: &clickhouse::Client, table: &str, rows: &[T]) -> Result<()>
 where
-    T: clickhouse::Row + Serialize + 'static + for<'b> clickhouse::Row<Value<'b> = T>,
+    T: clickhouse::Row + Serialize + 'static,
 {
-    let mut insert = client.insert::<T>(table).await?;
+    let mut insert = client.insert::<T>(table)?;
 
     for row in rows {
         insert.write(row).await?;
