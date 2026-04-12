@@ -1,0 +1,30 @@
+[package]
+name = "inserter"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+authors.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[features]
+default = []
+rustls-tls = ["ch/rustls-tls"]
+native-tls = ["ch/native-tls"]
+
+[dependencies]
+tokio = { workspace = true }
+tracing = { workspace = true }
+ch = { workspace = true, features = ["serde"] }
+serde = { workspace = true}
+thiserror = { workspace = true }
+async-channel = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+ch = { workspace = true, features = ["testing"] }
+serial_test = { workspace = true }
+clickhouse = { workspace = true, features = ["inserter"] }
