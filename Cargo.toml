@@ -3,7 +3,7 @@ resolver = "2"
 members = ["bin/*", "lib/*"]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "A CLI tool and Rust library for managing ClickHouse database migrations"
 license = "MIT"
