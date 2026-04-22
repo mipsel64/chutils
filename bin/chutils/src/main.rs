@@ -1,5 +1,6 @@
 mod backup;
 mod cluster;
+mod copy;
 mod migration;
 mod restore;
 mod status;
@@ -25,6 +26,8 @@ pub enum Command {
     Status(status::Command),
     /// Manage database cluster
     Cluster(cluster::Command),
+    /// Copy data
+    Copy(copy::Command)
 }
 
 fn check_version_flag() -> bool {
@@ -48,6 +51,7 @@ async fn run() -> eyre::Result<()> {
         Command::Restore(cmd) => cmd.execute().await?,
         Command::Status(cmd) => cmd.execute().await?,
         Command::Cluster(cmd) => cmd.execute().await?,
+        Command::Copy(cmd) => cmd.execute().await?,
     }
     Ok(())
 }
