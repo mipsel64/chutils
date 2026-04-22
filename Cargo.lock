@@ -233,7 +233,6 @@ dependencies = [
  "info",
  "migration",
  "reqwest",
- "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
