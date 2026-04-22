@@ -106,6 +106,13 @@ pub struct Command {
     /// discovered from the source via max(--partition-column) + 1 day.
     #[clap(long, requires = "partition_column")]
     pub end: Option<chrono::NaiveDate>,
+
+    /// Skip the pre-copy schema check. By default the tool runs
+    /// `DESCRIBE (<query>)` on the source and `DESCRIBE TABLE <dst_table>` on
+    /// the destination, and refuses to start if the source produces columns
+    /// that do not exist on the destination.
+    #[clap(long)]
+    pub skip_schema_check: bool,
 }
 
 impl Command {
@@ -128,6 +135,7 @@ impl Command {
             partition_column,
             start,
             end,
+            skip_schema_check,
         } = self;
 
         let http = reqwest::Client::builder()
@@ -147,7 +155,13 @@ impl Command {
             database: dst_database.as_deref(),
         };
 
-        eprintln!("Copying to {dst_table} (format={format})");
+        tracing::info!(%dst_table, %format, "Copying");
+
+        if !skip_schema_check {
+            check_schemas(&http, &src, &dst, &query, &dst_table).await?;
+        } else {
+            tracing::warn!("Skipping schema check");
+        }
 
         let Some(column) = partition_column else {
             // If partition_column is omitted, skip any extra filter
@@ -158,12 +172,17 @@ impl Command {
         let (range_start, range_end) =
             resolve_range(&http, &src, &query, &column, start, end).await?;
         if range_start >= range_end {
-            eprintln!("Date range [{range_start}, {range_end}) is empty — nothing to copy");
+            tracing::info!(%range_start, %range_end, "Date range is empty — nothing to copy");
             return Ok(());
         }
 
         let total_days = (range_end - range_start).num_days();
-        eprintln!("Breaking into {total_days} daily chunks [{range_start}, {range_end})");
+        tracing::info!(
+            %range_start,
+            %range_end,
+            total_days,
+            "Breaking into daily chunks"
+        );
         let overall_t0 = std::time::Instant::now();
 
         let mut day = range_start;
@@ -172,16 +191,17 @@ impl Command {
             let predicate = format!("{column} >= '{day}' AND {column} < '{next_day}'");
 
             let day_query = apply_filter(&query, &predicate);
-            eprintln!("[{day}]");
+            tracing::info!(%day, "Copying chunk");
             copy_chunk(&http, &src, &dst, &dst_table, &day_query, &format)
                 .await
                 .wrap_err_with(|| format!("Failed copying chunk {day}"))?;
             day = next_day;
         }
 
-        eprintln!(
-            "All {total_days} chunks completed in {:?}",
-            overall_t0.elapsed()
+        tracing::info!(
+            total_days,
+            elapsed = ?overall_t0.elapsed(),
+            "All chunks completed"
         );
         Ok(())
     }
@@ -216,16 +236,16 @@ async fn copy_chunk(
     let insert_query = format!("INSERT INTO {dst_table} FORMAT {format}");
     let count_query = format!("SELECT count() FROM ({query}) FORMAT TabSeparated");
 
-    tracing::info!(%count_query, "Estimating row count on source");
+    tracing::debug!(%count_query, "Estimating row count on source");
     let estimated_rows = fetch_count(http, src, &count_query)
         .await
         .wrap_err("Failed to estimate source row count")?;
-    eprintln!("  Estimated {estimated_rows} rows");
+    tracing::info!(estimated_rows, "Counted source rows");
     if estimated_rows == 0 {
         return Ok(());
     }
 
-    tracing::info!(%select_query, "Opening source stream");
+    tracing::debug!(%select_query, "Opening source stream");
     let mut src_req = http.post(src.url);
     if let Some(db) = src.database {
         src_req = src_req.query(&[("database", db)]);
@@ -247,7 +267,7 @@ async fn copy_chunk(
 
     let byte_stream = src_resp.bytes_stream();
 
-    tracing::info!(%insert_query, "Streaming to destination");
+    tracing::debug!(%insert_query, "Streaming to destination");
     let t0 = std::time::Instant::now();
 
     let mut dst_req = http.post(dst.url).query(&[("query", &insert_query)]);
@@ -269,7 +289,7 @@ async fn copy_chunk(
         eyre::bail!("Destination INSERT failed ({dst_status}): {body}");
     }
 
-    eprintln!("  done in {:?}", t0.elapsed());
+    tracing::info!(elapsed = ?t0.elapsed(), "Chunk done");
     Ok(())
 }
 
@@ -333,6 +353,187 @@ async fn resolve_range(
     let s = start.unwrap_or(min);
     let e = end.unwrap_or_else(|| max.succ_opt().expect("date overflow"));
     Ok((s, e))
+}
+
+/// One row from a ClickHouse `DESCRIBE` result. `default_kind` captures the
+/// 3rd `DESCRIBE` column — empty or `DEFAULT` for a regular insertable
+/// column, or `MATERIALIZED` / `ALIAS` / `EPHEMERAL` for columns that cannot
+/// appear in an `INSERT` and must be excluded from the schema check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Column {
+    name: String,
+    data_type: String,
+    default_kind: String,
+}
+
+impl Column {
+    /// Whether this column can be the target of an `INSERT`. Materialized,
+    /// alias, and ephemeral columns are computed by the server and are not
+    /// accepted in the input stream, so the pre-check skips them.
+    fn is_insertable(&self) -> bool {
+        matches!(self.default_kind.as_str(), "" | "DEFAULT")
+    }
+}
+
+/// Run the source and destination schema pre-check.
+///
+/// Fetches `DESCRIBE (<query>)` from the source (with `{filter}` substituted
+/// by a no-op) and `DESCRIBE TABLE <dst_table>` from the destination, then
+/// compares them. Logs warnings for type differences and extra destination
+/// columns, and returns an error if any source column is missing on the
+/// destination — that case would fail the INSERT for sure.
+async fn check_schemas(
+    http: &reqwest::Client,
+    src: &Endpoint<'_>,
+    dst: &Endpoint<'_>,
+    query: &str,
+    dst_table: &str,
+) -> eyre::Result<()> {
+    let src_cols = describe_query(http, src, query)
+        .await
+        .wrap_err("Failed to DESCRIBE source query")?;
+    let dst_cols = describe_table(http, dst, dst_table)
+        .await
+        .wrap_err_with(|| format!("Failed to DESCRIBE destination table {dst_table}"))?;
+
+    tracing::info!(
+        source_columns = src_cols.len(),
+        destination_columns = dst_cols.len(),
+        "Schema check"
+    );
+    compare_schemas(&src_cols, &dst_cols)
+}
+
+/// Return `DESCRIBE (<query>)` column metadata from the source, with
+/// `{filter}` neutralized so the describe query is always valid.
+async fn describe_query(
+    http: &reqwest::Client,
+    src: &Endpoint<'_>,
+    query: &str,
+) -> eyre::Result<Vec<Column>> {
+    let inner = apply_no_filter(query);
+    let q = format!("DESCRIBE ({inner}) FORMAT TabSeparated");
+    let body = send_query(http, src, &q).await?;
+    Ok(drop_non_insertable(parse_describe(&body)?))
+}
+
+/// Return `DESCRIBE TABLE <dst_table>` column metadata from the destination,
+/// with `MATERIALIZED`/`ALIAS`/`EPHEMERAL` columns stripped so the comparator
+/// neither requires the source to produce them nor flags them as "extra".
+async fn describe_table(
+    http: &reqwest::Client,
+    dst: &Endpoint<'_>,
+    dst_table: &str,
+) -> eyre::Result<Vec<Column>> {
+    let q = format!("DESCRIBE TABLE {dst_table} FORMAT TabSeparated");
+    let body = send_query(http, dst, &q).await?;
+    Ok(drop_non_insertable(parse_describe(&body)?))
+}
+
+/// Filter a DESCRIBE result down to columns that can appear in an INSERT.
+/// Non-insertable columns are printed so the user can see what was skipped.
+fn drop_non_insertable(cols: Vec<Column>) -> Vec<Column> {
+    cols.into_iter()
+        .filter(|c| {
+            let keep = c.is_insertable();
+            if !keep {
+                tracing::info!(
+                    name = %c.name,
+                    data_type = %c.data_type,
+                    kind = %c.default_kind,
+                    "Skipping non-insertable column"
+                );
+            }
+            keep
+        })
+        .collect()
+}
+
+/// Parse ClickHouse's `DESCRIBE ... FORMAT TabSeparated` output. Each line
+/// has seven tab-separated fields (name, type, default_type,
+/// default_expression, comment, codec_expression, ttl_expression); only the
+/// first two are used for the schema comparison.
+fn parse_describe(body: &str) -> eyre::Result<Vec<Column>> {
+    body.lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let mut parts = line.split('\t');
+            let name = parts
+                .next()
+                .ok_or_else(|| eyre::eyre!("DESCRIBE row missing name: {line:?}"))?;
+            let data_type = parts
+                .next()
+                .ok_or_else(|| eyre::eyre!("DESCRIBE row missing type: {line:?}"))?;
+            // `default_type` is the 3rd field; older/newer ClickHouse versions
+            // always emit it but it may be empty for regular columns.
+            let default_kind = parts.next().unwrap_or("");
+            Ok(Column {
+                name: name.to_string(),
+                data_type: data_type.to_string(),
+                default_kind: default_kind.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Compare two column lists by name. A source column absent from the
+/// destination is a hard error. Type differences and extra destination
+/// columns are only logged so safe coercions (e.g. `UInt32` → `UInt64`) and
+/// destination-side defaults keep working.
+fn compare_schemas(src: &[Column], dst: &[Column]) -> eyre::Result<()> {
+    use std::collections::{HashMap, HashSet};
+
+    let dst_by_name: HashMap<&str, &str> = dst
+        .iter()
+        .map(|c| (c.name.as_str(), c.data_type.as_str()))
+        .collect();
+    let src_names: HashSet<&str> = src.iter().map(|c| c.name.as_str()).collect();
+
+    let mut missing: Vec<&Column> = Vec::new();
+    let mut type_mismatches: Vec<(&Column, &str)> = Vec::new();
+
+    for col in src {
+        match dst_by_name.get(col.name.as_str()) {
+            None => missing.push(col),
+            Some(dst_type) if *dst_type != col.data_type.as_str() => {
+                type_mismatches.push((col, dst_type));
+            }
+            Some(_) => {}
+        }
+    }
+
+    for (src_col, dst_type) in &type_mismatches {
+        tracing::warn!(
+            column = %src_col.name,
+            source_type = %src_col.data_type,
+            destination_type = %dst_type,
+            "Column type differs between source and destination"
+        );
+    }
+    for col in dst.iter().filter(|c| !src_names.contains(c.name.as_str())) {
+        tracing::info!(
+            column = %col.name,
+            data_type = %col.data_type,
+            "Destination column not produced by source — default will be used"
+        );
+    }
+    for col in &missing {
+        tracing::error!(
+            column = %col.name,
+            data_type = %col.data_type,
+            "Source column has no match on destination"
+        );
+    }
+
+    if !missing.is_empty() {
+        eyre::bail!(
+            "Schema check failed: {} source column(s) missing on destination. \
+             Fix the destination schema or re-run with --skip-schema-check.",
+            missing.len()
+        );
+    }
+
+    Ok(())
 }
 
 /// Substitute `{filter}` in the user's query with the per-day predicate, or
@@ -456,5 +657,89 @@ mod tests {
         let out = apply_no_filter(q);
         assert!(!out.contains("{filter}"));
         assert_eq!(out.matches("1 = 1").count(), 2);
+    }
+
+    fn col(name: &str, ty: &str) -> Column {
+        Column {
+            name: name.to_string(),
+            data_type: ty.to_string(),
+            default_kind: String::new(),
+        }
+    }
+
+    fn col_kind(name: &str, ty: &str, kind: &str) -> Column {
+        Column {
+            name: name.to_string(),
+            data_type: ty.to_string(),
+            default_kind: kind.to_string(),
+        }
+    }
+
+    #[test]
+    fn parse_describe_extracts_name_type_and_kind() {
+        let body = "id\tUInt64\t\t\t\t\t\n\
+                    payload\tString\tDEFAULT\t''\t\t\t\n\
+                    row_hash\tUInt64\tMATERIALIZED\tcityHash64(payload)\t\t\t\n";
+        let cols = parse_describe(body).unwrap();
+        assert_eq!(
+            cols,
+            vec![
+                col_kind("id", "UInt64", ""),
+                col_kind("payload", "String", "DEFAULT"),
+                col_kind("row_hash", "UInt64", "MATERIALIZED"),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_describe_ignores_blank_lines() {
+        let body = "id\tUInt64\n\npayload\tString\n\n";
+        let cols = parse_describe(body).unwrap();
+        assert_eq!(cols.len(), 2);
+    }
+
+    #[test]
+    fn drop_non_insertable_keeps_regular_and_default_columns() {
+        let cols = vec![
+            col_kind("id", "UInt64", ""),
+            col_kind("status", "String", "DEFAULT"),
+            col_kind("hash", "UInt64", "MATERIALIZED"),
+            col_kind("full_name", "String", "ALIAS"),
+            col_kind("tmp", "UInt8", "EPHEMERAL"),
+        ];
+        let kept: Vec<String> = drop_non_insertable(cols)
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(kept, vec!["id".to_string(), "status".to_string()]);
+    }
+
+    #[test]
+    fn compare_schemas_accepts_identical() {
+        let schema = vec![col("id", "UInt64"), col("payload", "String")];
+        compare_schemas(&schema, &schema).unwrap();
+    }
+
+    #[test]
+    fn compare_schemas_allows_extra_destination_columns() {
+        let src = vec![col("id", "UInt64")];
+        let dst = vec![col("id", "UInt64"), col("inserted_at", "DateTime")];
+        compare_schemas(&src, &dst).unwrap();
+    }
+
+    #[test]
+    fn compare_schemas_tolerates_type_mismatch_with_warning() {
+        let src = vec![col("id", "UInt32")];
+        let dst = vec![col("id", "UInt64")];
+        // Different types are warnings, not errors: ClickHouse can coerce.
+        compare_schemas(&src, &dst).unwrap();
+    }
+
+    #[test]
+    fn compare_schemas_rejects_missing_destination_column() {
+        let src = vec![col("id", "UInt64"), col("extra", "String")];
+        let dst = vec![col("id", "UInt64")];
+        let err = compare_schemas(&src, &dst).unwrap_err();
+        assert!(err.to_string().contains("extra") || err.to_string().contains("missing"));
     }
 }
