@@ -225,6 +225,7 @@ version = "0.3.2"
 dependencies = [
  "backup",
  "ch",
+ "chrono",
  "clap",
  "eyre",
  "human_bytes",

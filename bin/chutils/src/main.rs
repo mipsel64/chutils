@@ -27,7 +27,7 @@ pub enum Command {
     /// Manage database cluster
     Cluster(cluster::Command),
     /// Copy data
-    Copy(copy::Command)
+    Copy(copy::Command),
 }
 
 fn check_version_flag() -> bool {
