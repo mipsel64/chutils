@@ -289,8 +289,49 @@ async fn copy_chunk(
         eyre::bail!("Destination INSERT failed ({dst_status}): {body}");
     }
 
-    tracing::info!(elapsed = ?t0.elapsed(), "Chunk done");
+    // Read the server-side row count from the response header before
+    // dropping the response so we can verify against the source count.
+    let written_rows = extract_written_rows(dst_resp.headers());
+    let _ = dst_resp.bytes().await;
+
+    match written_rows {
+        Some(written) if written == estimated_rows => {
+            tracing::info!(
+                rows = written,
+                elapsed = ?t0.elapsed(),
+                "Chunk done (verified)"
+            );
+        }
+        Some(written) => {
+            eyre::bail!(
+                "Verification failed: source reported {estimated_rows} rows \
+                 but destination wrote {written}"
+            );
+        }
+        None => {
+            tracing::warn!(
+                rows = estimated_rows,
+                elapsed = ?t0.elapsed(),
+                "Chunk done; X-ClickHouse-Summary header missing, skipped verification"
+            );
+        }
+    }
     Ok(())
+}
+
+/// Pull `written_rows` out of ClickHouse's `X-ClickHouse-Summary` response
+/// header. Returns `None` when the header is absent or malformed so the
+/// caller can fall back to a warning instead of blocking the copy.
+fn extract_written_rows(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let raw = headers.get("x-clickhouse-summary")?.to_str().ok()?;
+    parse_written_rows(raw)
+}
+
+/// Parse `written_rows` out of the JSON summary string. Kept separate from
+/// the header lookup so it can be unit-tested without building a `HeaderMap`.
+fn parse_written_rows(summary: &str) -> Option<u64> {
+    let obj: serde_json::Value = serde_json::from_str(summary).ok()?;
+    obj.get("written_rows")?.as_str()?.parse().ok()
 }
 
 /// Run `count_query` against `src` and parse the single-number response.
@@ -696,6 +737,29 @@ mod tests {
         let body = "id\tUInt64\n\npayload\tString\n\n";
         let cols = parse_describe(body).unwrap();
         assert_eq!(cols.len(), 2);
+    }
+
+    #[test]
+    fn parse_written_rows_extracts_from_summary() {
+        let summary = r#"{"read_rows":"0","read_bytes":"0","written_rows":"1234","written_bytes":"5678","elapsed_ns":"42"}"#;
+        assert_eq!(parse_written_rows(summary), Some(1234));
+    }
+
+    #[test]
+    fn parse_written_rows_returns_none_for_invalid_json() {
+        assert_eq!(parse_written_rows("not json"), None);
+    }
+
+    #[test]
+    fn parse_written_rows_returns_none_when_field_missing() {
+        let summary = r#"{"read_rows":"0"}"#;
+        assert_eq!(parse_written_rows(summary), None);
+    }
+
+    #[test]
+    fn parse_written_rows_handles_zero() {
+        let summary = r#"{"written_rows":"0"}"#;
+        assert_eq!(parse_written_rows(summary), Some(0));
     }
 
     #[test]
