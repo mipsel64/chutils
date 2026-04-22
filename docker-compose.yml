@@ -1,0 +1,41 @@
+# Local ClickHouse for integration tests.
+#
+# Usage:
+#   docker compose up -d --wait
+#   TEST_CLICKHOUSE_URL=http://localhost:8123 \
+#     cargo test -p chutils --test copy_integration
+#   docker compose down -v    # -v wipes the data volume; see below.
+#
+# The mounted users.d/default.xml pins `default` to no password, so tests
+# can leave TEST_CLICKHOUSE_USER / TEST_CLICKHOUSE_PASSWORD unset.
+#
+# Why `down -v`: the ClickHouse image declares VOLUME /var/lib/clickhouse,
+# so Docker attaches an anonymous volume on every `up`. A plain `down`
+# leaves that volume behind, and a later `up` reuses it — which means any
+# old auth state can persist even though the compose file looks stateless.
+# Always use `-v` (or `docker compose down --volumes`) when you want a
+# fresh database.
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: chutils-clickhouse
+    ports:
+      - "8123:8123"  # HTTP
+      - "9000:9000"  # Native TCP
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - ./.docker/clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+    environment:
+      # Don't let the image entrypoint generate a users.xml of its own —
+      # rely entirely on the mounted users.d override above.
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s

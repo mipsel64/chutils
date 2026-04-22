@@ -1,10 +1,5 @@
 use eyre::Context;
 
-/// Literal token the user can place inside `--query` to mark where the
-/// partition predicate should be substituted. Using `{}` avoids clashing with
-/// ClickHouse's own `{name:Type}` query parameter syntax.
-const FILTER_PLACEHOLDER: &str = "{filter}";
-
 #[derive(clap::Parser)]
 pub struct Command {
     /// Source ClickHouse URL (e.g., http://src-host:8123)
@@ -47,44 +42,6 @@ pub struct Command {
 
     /// SELECT query to stream from the source. The FORMAT clause is appended
     /// automatically — do not include it here.
-    ///
-    /// May contain the literal token `{filter}`. When --partition-column is
-    /// set, each iteration substitutes `{filter}` with the per-day predicate
-    /// (`col >= 'day' AND col < 'next_day'`); otherwise it is substituted
-    /// with `1 = 1`. Use the placeholder when your SELECT list does not
-    /// project the partition column — put `{filter}` inside your own WHERE
-    /// clause so the predicate is applied against the source table directly,
-    /// not against the subquery's output.
-    ///
-    /// Examples:
-    ///
-    /// 1. Simple copy without partitioning — everything goes in one stream:
-    ///      --query "SELECT * FROM events"
-    ///
-    /// 2. Partitioned copy where the partition column IS in the projection —
-    ///    no placeholder needed; the tool wraps the query as a subquery and
-    ///    appends `WHERE created_at >= 'day' AND created_at < 'next_day'`:
-    ///      --query "SELECT * FROM events" \
-    ///      --partition-column created_at
-    ///
-    /// 3. Partitioned copy where the partition column is NOT projected —
-    ///    use `{filter}` so the predicate reaches the table scan. Expands to
-    ///    `SELECT id, payload FROM events WHERE created_at >= 'day' AND
-    ///    created_at < 'next_day'`:
-    ///      --query "SELECT id, payload FROM events WHERE {filter}" \
-    ///      --partition-column created_at
-    ///
-    /// 4. Partitioned copy combined with your own WHERE conditions — the
-    ///    placeholder slots in next to your predicates:
-    ///      --query "SELECT id, payload FROM events \
-    ///               WHERE {filter} AND tenant_id = 42" \
-    ///      --partition-column created_at
-    ///
-    /// 5. `{filter}` without --partition-column — the placeholder is
-    ///    substituted with `1 = 1`, so the query still runs as one stream
-    ///    with your other conditions intact:
-    ///      --query "SELECT id FROM events WHERE {filter} AND tenant_id = 42"
-    ///      # becomes: SELECT id FROM events WHERE 1 = 1 AND tenant_id = 42
     #[clap(long, short = 'q')]
     pub query: String,
 
@@ -92,33 +49,18 @@ pub struct Command {
     #[clap(long, default_value = "Native")]
     pub format: String,
 
-    /// Date/DateTime column used to split the copy into daily chunks. When
-    /// set, the tool iterates one day at a time instead of a single stream.
-    #[clap(long)]
-    pub partition_column: Option<String>,
-
-    /// Inclusive start date for --partition-column (YYYY-MM-DD). If omitted,
-    /// discovered from the source via min(--partition-column).
-    #[clap(long, requires = "partition_column")]
-    pub start: Option<chrono::NaiveDate>,
-
-    /// Exclusive end date for --partition-column (YYYY-MM-DD). If omitted,
-    /// discovered from the source via max(--partition-column) + 1 day.
-    #[clap(long, requires = "partition_column")]
-    pub end: Option<chrono::NaiveDate>,
-
     /// Skip the pre-copy schema check. By default the tool runs
     /// `DESCRIBE (<query>)` on the source and `DESCRIBE TABLE <dst_table>` on
     /// the destination, and refuses to start if the source produces columns
     /// that do not exist on the destination.
-    #[clap(long)]
+    #[clap(long, default_value = "false")]
     pub skip_schema_check: bool,
 }
 
 impl Command {
-    /// Entry point for the `copy` subcommand. Dispatches to either a single
-    /// streaming copy or a daily-chunked loop depending on whether
-    /// `--partition-column` was supplied.
+    /// Entry point for the `copy` subcommand. Runs an optional schema
+    /// pre-check and then streams the rows produced by `--query` from source
+    /// to destination.
     pub async fn execute(self) -> eyre::Result<()> {
         let Command {
             src_url,
@@ -132,9 +74,6 @@ impl Command {
             dst_table,
             query,
             format,
-            partition_column,
-            start,
-            end,
             skip_schema_check,
         } = self;
 
@@ -163,47 +102,7 @@ impl Command {
             tracing::warn!("Skipping schema check");
         }
 
-        let Some(column) = partition_column else {
-            // If partition_column is omitted, skip any extra filter
-            let effective_query = apply_no_filter(&query);
-            return copy_chunk(&http, &src, &dst, &dst_table, &effective_query, &format).await;
-        };
-
-        let (range_start, range_end) =
-            resolve_range(&http, &src, &query, &column, start, end).await?;
-        if range_start >= range_end {
-            tracing::info!(%range_start, %range_end, "Date range is empty — nothing to copy");
-            return Ok(());
-        }
-
-        let total_days = (range_end - range_start).num_days();
-        tracing::info!(
-            %range_start,
-            %range_end,
-            total_days,
-            "Breaking into daily chunks"
-        );
-        let overall_t0 = std::time::Instant::now();
-
-        let mut day = range_start;
-        while day < range_end {
-            let next_day = day.succ_opt().expect("date overflow");
-            let predicate = format!("{column} >= '{day}' AND {column} < '{next_day}'");
-
-            let day_query = apply_filter(&query, &predicate);
-            tracing::info!(%day, "Copying chunk");
-            copy_chunk(&http, &src, &dst, &dst_table, &day_query, &format)
-                .await
-                .wrap_err_with(|| format!("Failed copying chunk {day}"))?;
-            day = next_day;
-        }
-
-        tracing::info!(
-            total_days,
-            elapsed = ?overall_t0.elapsed(),
-            "All chunks completed"
-        );
-        Ok(())
+        copy_chunk(&http, &src, &dst, &dst_table, &query, &format).await
     }
 }
 
@@ -292,7 +191,7 @@ async fn copy_chunk(
     tracing::info!(
         rows = estimated_rows,
         elapsed = ?t0.elapsed(),
-        "Chunk done"
+        "Copy done"
     );
     Ok(())
 }
@@ -313,50 +212,6 @@ async fn fetch_count(
     body.trim()
         .parse::<u64>()
         .wrap_err_with(|| format!("Count response was not a number: {body:?}"))
-}
-
-/// Determine the `[start, end)` date range for daily chunking.
-///
-/// If both bounds are provided by the user, returns them unchanged without
-/// hitting the source. Otherwise runs `min`/`max` over the user's query
-/// (wrapped as a subquery so any WHERE clause is respected) and fills in
-/// whichever side was omitted. The discovered `max` is bumped by one day so
-/// the returned range is end-exclusive, matching the loop in `execute`.
-async fn resolve_range(
-    http: &reqwest::Client,
-    src: &Endpoint<'_>,
-    query: &str,
-    column: &str,
-    start: Option<chrono::NaiveDate>,
-    end: Option<chrono::NaiveDate>,
-) -> eyre::Result<(chrono::NaiveDate, chrono::NaiveDate)> {
-    if let (Some(s), Some(e)) = (start, end) {
-        return Ok((s, e));
-    }
-
-    let inner = apply_no_filter(query);
-    let q = format!(
-        "SELECT toDate(min({column})), toDate(max({column})) FROM ({inner}) FORMAT TabSeparated"
-    );
-    let body = send_query(http, src, &q)
-        .await
-        .wrap_err("Failed to discover date range")?;
-
-    let line = body.trim();
-    let mut parts = line.split('\t');
-    let min_s = parts.next().unwrap_or_default();
-    let max_s = parts.next().unwrap_or_default();
-    if min_s.is_empty() || max_s.is_empty() {
-        eyre::bail!("Source query returned no rows; cannot discover date range");
-    }
-    let min = chrono::NaiveDate::parse_from_str(min_s, "%Y-%m-%d")
-        .wrap_err_with(|| format!("Invalid min date: {min_s:?}"))?;
-    let max = chrono::NaiveDate::parse_from_str(max_s, "%Y-%m-%d")
-        .wrap_err_with(|| format!("Invalid max date: {max_s:?}"))?;
-
-    let s = start.unwrap_or(min);
-    let e = end.unwrap_or_else(|| max.succ_opt().expect("date overflow"));
-    Ok((s, e))
 }
 
 /// One row from a ClickHouse `DESCRIBE` result. `default_kind` captures the
@@ -381,11 +236,11 @@ impl Column {
 
 /// Run the source and destination schema pre-check.
 ///
-/// Fetches `DESCRIBE (<query>)` from the source (with `{filter}` substituted
-/// by a no-op) and `DESCRIBE TABLE <dst_table>` from the destination, then
-/// compares them. Logs warnings for type differences and extra destination
-/// columns, and returns an error if any source column is missing on the
-/// destination — that case would fail the INSERT for sure.
+/// Fetches `DESCRIBE (<query>)` from the source and `DESCRIBE TABLE
+/// <dst_table>` from the destination, then compares them. Logs warnings for
+/// type differences and extra destination columns, and returns an error if
+/// any source column is missing on the destination — that case would fail
+/// the INSERT for sure.
 async fn check_schemas(
     http: &reqwest::Client,
     src: &Endpoint<'_>,
@@ -408,15 +263,13 @@ async fn check_schemas(
     compare_schemas(&src_cols, &dst_cols)
 }
 
-/// Return `DESCRIBE (<query>)` column metadata from the source, with
-/// `{filter}` neutralized so the describe query is always valid.
+/// Return `DESCRIBE (<query>)` column metadata from the source.
 async fn describe_query(
     http: &reqwest::Client,
     src: &Endpoint<'_>,
     query: &str,
 ) -> eyre::Result<Vec<Column>> {
-    let inner = apply_no_filter(query);
-    let q = format!("DESCRIBE ({inner}) FORMAT TabSeparated");
+    let q = format!("DESCRIBE ({query}) FORMAT TabSeparated");
     let body = send_query(http, src, &q).await?;
     Ok(drop_non_insertable(parse_describe(&body)?))
 }
@@ -540,34 +393,6 @@ fn compare_schemas(src: &[Column], dst: &[Column]) -> eyre::Result<()> {
     Ok(())
 }
 
-/// Substitute `{filter}` in the user's query with the per-day predicate, or
-/// — if the placeholder is absent — fall back to wrapping the query as a
-/// subquery with an outer `WHERE`.
-///
-/// The placeholder form lets the predicate sit next to the source-table
-/// scan, so the partition column does not need to appear in the SELECT
-/// projection (and ClickHouse can still use the primary key index). The
-/// subquery-wrap fallback only works when the partition column is projected.
-fn apply_filter(query: &str, predicate: &str) -> String {
-    if query.contains(FILTER_PLACEHOLDER) {
-        query.replace(FILTER_PLACEHOLDER, predicate)
-    } else {
-        format!("SELECT * FROM ({query}) WHERE {predicate}")
-    }
-}
-
-/// Neutralize `{filter}` for queries that should run without any date filter
-/// applied (single-shot copies and range-discovery). Substitutes a no-op
-/// predicate so the query is syntactically valid; queries that do not
-/// contain the placeholder are returned unchanged.
-fn apply_no_filter(query: &str) -> String {
-    if query.contains(FILTER_PLACEHOLDER) {
-        query.replace(FILTER_PLACEHOLDER, "1 = 1")
-    } else {
-        query.to_string()
-    }
-}
-
 /// POST a simple (non-streaming) query to ClickHouse and return the full
 /// response body as a string.
 ///
@@ -600,68 +425,6 @@ async fn send_query(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const PREDICATE: &str = "created_at >= '2026-01-01' AND created_at < '2026-01-02'";
-
-    #[test]
-    fn apply_filter_substitutes_placeholder() {
-        let q = "SELECT id FROM events WHERE {filter}";
-        assert_eq!(
-            apply_filter(q, PREDICATE),
-            format!("SELECT id FROM events WHERE {PREDICATE}"),
-        );
-    }
-
-    #[test]
-    fn apply_filter_replaces_every_occurrence() {
-        let q =
-            "SELECT id FROM events WHERE {filter} AND tenant IN (SELECT t FROM x WHERE {filter})";
-        let out = apply_filter(q, PREDICATE);
-        assert!(
-            !out.contains("{filter}"),
-            "placeholder should be gone: {out}"
-        );
-        assert_eq!(out.matches(PREDICATE).count(), 2);
-    }
-
-    #[test]
-    fn apply_filter_wraps_when_placeholder_missing() {
-        let q = "SELECT * FROM events";
-        assert_eq!(
-            apply_filter(q, PREDICATE),
-            format!("SELECT * FROM ({q}) WHERE {PREDICATE}"),
-        );
-    }
-
-    #[test]
-    fn apply_filter_does_not_mutate_input_without_placeholder() {
-        let q = "SELECT * FROM events";
-        let _ = apply_filter(q, PREDICATE);
-        assert_eq!(q, "SELECT * FROM events");
-    }
-
-    #[test]
-    fn apply_no_filter_substitutes_with_noop() {
-        let q = "SELECT id FROM events WHERE {filter} AND tenant = 7";
-        assert_eq!(
-            apply_no_filter(q),
-            "SELECT id FROM events WHERE 1 = 1 AND tenant = 7",
-        );
-    }
-
-    #[test]
-    fn apply_no_filter_returns_unchanged_without_placeholder() {
-        let q = "SELECT * FROM events WHERE tenant = 7";
-        assert_eq!(apply_no_filter(q), q);
-    }
-
-    #[test]
-    fn apply_no_filter_replaces_every_occurrence() {
-        let q = "SELECT a FROM t1 WHERE {filter} UNION ALL SELECT a FROM t2 WHERE {filter}";
-        let out = apply_no_filter(q);
-        assert!(!out.contains("{filter}"));
-        assert_eq!(out.matches("1 = 1").count(), 2);
-    }
 
     fn col(name: &str, ty: &str) -> Column {
         Column {

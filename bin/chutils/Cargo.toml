@@ -16,4 +16,6 @@ human_bytes = { workspace = true, features = ["fast"] }
 humantime = { workspace = true }
 info = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-chrono = { workspace = true }
+
+[dev-dependencies]
+serial_test = { workspace = true }
