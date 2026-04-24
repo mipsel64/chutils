@@ -18,6 +18,8 @@ backup = { path = "./lib/backup" }
 ch = { path = "./lib/ch" }
 info = { path = "./lib/info" }
 inserter = { path = "./lib/inserter" }
+macros = { path = "./lib/macros" }
+macros-derive = { path = "./lib/macros-derive" }
 
 tokio = { version = "1.49", features = ["full"] }
 tracing = "0.1"
