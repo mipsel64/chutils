@@ -2,6 +2,8 @@ mod error;
 
 pub use error::*;
 
+pub use macros::Table;
+
 use ch::clickhouse;
 use std::{sync::Arc, time::Duration};
 
@@ -178,7 +180,7 @@ where
 /// 3. On flush failure, retries with exponential backoff, re-writing all rows
 ///    each attempt (the `insert()` API creates a fresh INSERT per call).
 /// 4. On cancellation, flushes any remaining rows before exiting.
-pub fn spawn<T>(
+pub fn spawn_with_table<T>(
     client: Arc<clickhouse::Client>,
     table: &str,
     config: Config,
@@ -209,6 +211,30 @@ where
     });
 
     Arc::new(Inserter { tx })
+}
+
+/// Spawn a background inserter task. Returns a sender handle.
+///
+/// The destination table is inferred from `T` via the [`macros::Table`] trait.
+///
+/// The background task:
+/// 1. Receives rows from the channel into an internal `Vec<T>` buffer.
+/// 2. When `max_rows`, `max_bytes`, or `flush_interval` thresholds are met,
+///    flushes the buffer via `clickhouse::Client::insert()`.
+/// 3. On flush failure, retries with exponential backoff, re-writing all rows
+///    each attempt (the `insert()` API creates a fresh INSERT per call).
+/// 4. On cancellation, flushes any remaining rows before exiting.
+pub fn spawn<T>(
+    client: Arc<clickhouse::Client>,
+    config: Config,
+    cancel: CancellationToken,
+) -> Arc<dyn Insert<Row = T>>
+where
+    T: clickhouse::Row + Serialize + for<'b> clickhouse::Row<Value<'b> = T>,
+    T: macros::Table + Send + Sync + 'static,
+{
+    let table = T::table_name();
+    spawn_with_table(client, table, config, cancel)
 }
 
 async fn run_background<T>(
