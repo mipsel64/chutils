@@ -23,6 +23,7 @@ thiserror = { workspace = true }
 async-channel = { workspace = true }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
+macros = { workspace = true }
 
 [dev-dependencies]
 ch = { workspace = true, features = ["testing"] }

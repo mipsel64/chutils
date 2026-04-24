@@ -1,0 +1,13 @@
+[package]
+name = "macros"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+authors.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[dependencies]
+macros-derive = { path = "../macros-derive", version = "0.3.2" }
