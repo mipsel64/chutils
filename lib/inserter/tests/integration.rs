@@ -1,26 +1,23 @@
 use ch::clickhouse;
 use clickhouse::Row;
-use inserter::{Config, Insert};
+use inserter::{Config, Insert, Table};
 use serde::Serialize;
 use serial_test::serial;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-/// Atomic counter to generate unique table suffixes for test isolation.
-static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
-
-fn unique_table_name() -> String {
-    let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("test_inserter_{}_{}", std::process::id(), id)
-}
-
-/// A simple row type used across all tests.
-#[derive(Debug, Clone, Row, Serialize)]
+/// A simple row type used across all tests. The destination table name is
+/// resolved from this type via the [`Table`] derive.
+#[derive(Debug, Clone, Row, Serialize, Table)]
+#[table(name = "test_inserter_rows")]
 struct TestRow {
     id: u32,
     name: String,
+}
+
+fn table_name() -> &'static str {
+    <TestRow as Table>::table_name()
 }
 
 /// Build a raw clickhouse client from TEST_CLICKHOUSE_URL.
@@ -55,10 +52,10 @@ macro_rules! require_clickhouse {
     };
 }
 
-/// Create a fresh test table and return its name. Drops any leftover table
-/// from a previous failed run first to guarantee a clean starting state.
-async fn create_test_table(client: &clickhouse::Client) -> String {
-    let table = unique_table_name();
+/// Create a fresh test table. Drops any leftover table from a previous run
+/// first to guarantee a clean starting state.
+async fn create_test_table(client: &clickhouse::Client) {
+    let table = table_name();
     // Drop first to clean up leftovers from a previous failed run where
     // drop_test_table may not have executed due to a panic.
     client
@@ -74,20 +71,19 @@ async fn create_test_table(client: &clickhouse::Client) -> String {
         .execute()
         .await
         .expect("Failed to create test table");
-    table
 }
 
-async fn drop_test_table(client: &clickhouse::Client, table: &str) {
+async fn drop_test_table(client: &clickhouse::Client) {
     client
-        .query(&format!("DROP TABLE IF EXISTS {}", table))
+        .query(&format!("DROP TABLE IF EXISTS {}", table_name()))
         .execute()
         .await
         .ok();
 }
 
-async fn count_rows(client: &clickhouse::Client, table: &str) -> u64 {
+async fn count_rows(client: &clickhouse::Client) -> u64 {
     client
-        .query(&format!("SELECT count() FROM {}", table))
+        .query(&format!("SELECT count() FROM {}", table_name()))
         .fetch_one()
         .await
         .unwrap()
@@ -108,12 +104,11 @@ fn test_rows(n: u32) -> Vec<TestRow> {
 #[serial(clickhouse)]
 async fn test_spawn_insert_single_row() {
     let client = require_clickhouse!();
-    let table = create_test_table(&client).await;
+    create_test_table(&client).await;
 
     let cancel = CancellationToken::new();
     let config = Config::new().with_flush_interval(Duration::from_secs(60));
-    let inserter =
-        inserter::spawn::<TestRow>(Arc::new(client.clone()), &table, config, cancel.clone());
+    let inserter = inserter::spawn::<TestRow>(Arc::new(client.clone()), config, cancel.clone());
 
     inserter
         .insert(TestRow {
@@ -128,30 +123,29 @@ async fn test_spawn_insert_single_row() {
     // Give the background task time to flush.
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    assert_eq!(count_rows(&client, &table).await, 1);
+    assert_eq!(count_rows(&client).await, 1);
 
-    drop_test_table(&client, &table).await;
+    drop_test_table(&client).await;
 }
 
 #[tokio::test]
 #[serial(clickhouse)]
 async fn test_spawn_insert_many() {
     let client = require_clickhouse!();
-    let table = create_test_table(&client).await;
+    create_test_table(&client).await;
 
     let cancel = CancellationToken::new();
     let config = Config::new().with_flush_interval(Duration::from_secs(60));
-    let inserter =
-        inserter::spawn::<TestRow>(Arc::new(client.clone()), &table, config, cancel.clone());
+    let inserter = inserter::spawn::<TestRow>(Arc::new(client.clone()), config, cancel.clone());
 
     inserter.insert_many(test_rows(50)).await.unwrap();
 
     cancel.cancel();
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    assert_eq!(count_rows(&client, &table).await, 50);
+    assert_eq!(count_rows(&client).await, 50);
 
-    drop_test_table(&client, &table).await;
+    drop_test_table(&client).await;
 }
 
 // ==================== Flush Threshold Tests ====================
@@ -160,14 +154,13 @@ async fn test_spawn_insert_many() {
 #[serial(clickhouse)]
 async fn test_flush_on_max_rows_threshold() {
     let client = require_clickhouse!();
-    let table = create_test_table(&client).await;
+    create_test_table(&client).await;
 
     let cancel = CancellationToken::new();
     let config = Config::new()
         .with_max_rows(10)
         .with_flush_interval(Duration::from_secs(60));
-    let inserter =
-        inserter::spawn::<TestRow>(Arc::new(client.clone()), &table, config, cancel.clone());
+    let inserter = inserter::spawn::<TestRow>(Arc::new(client.clone()), config, cancel.clone());
 
     // Write exactly max_rows to trigger a threshold flush.
     inserter.insert_many(test_rows(10)).await.unwrap();
@@ -175,38 +168,37 @@ async fn test_flush_on_max_rows_threshold() {
     // Wait for the flush to complete (no cancellation needed).
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    assert_eq!(count_rows(&client, &table).await, 10);
+    assert_eq!(count_rows(&client).await, 10);
 
     cancel.cancel();
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    drop_test_table(&client, &table).await;
+    drop_test_table(&client).await;
 }
 
 #[tokio::test]
 #[serial(clickhouse)]
 async fn test_flush_on_interval() {
     let client = require_clickhouse!();
-    let table = create_test_table(&client).await;
+    create_test_table(&client).await;
 
     let cancel = CancellationToken::new();
     let config = Config::new()
         .with_max_rows(1000) // high threshold — won't trigger
         .with_flush_interval(Duration::from_millis(200));
-    let inserter =
-        inserter::spawn::<TestRow>(Arc::new(client.clone()), &table, config, cancel.clone());
+    let inserter = inserter::spawn::<TestRow>(Arc::new(client.clone()), config, cancel.clone());
 
     inserter.insert_many(test_rows(5)).await.unwrap();
 
     // Wait for the interval to fire and flush.
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    assert_eq!(count_rows(&client, &table).await, 5);
+    assert_eq!(count_rows(&client).await, 5);
 
     cancel.cancel();
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    drop_test_table(&client, &table).await;
+    drop_test_table(&client).await;
 }
 
 // ==================== Cancellation Tests ====================
@@ -215,14 +207,13 @@ async fn test_flush_on_interval() {
 #[serial(clickhouse)]
 async fn test_cancel_flushes_remaining_rows() {
     let client = require_clickhouse!();
-    let table = create_test_table(&client).await;
+    create_test_table(&client).await;
 
     let cancel = CancellationToken::new();
     let config = Config::new()
         .with_max_rows(1000) // high threshold — won't trigger
         .with_flush_interval(Duration::from_secs(60)); // long interval — won't trigger
-    let inserter =
-        inserter::spawn::<TestRow>(Arc::new(client.clone()), &table, config, cancel.clone());
+    let inserter = inserter::spawn::<TestRow>(Arc::new(client.clone()), config, cancel.clone());
 
     inserter.insert_many(test_rows(7)).await.unwrap();
 
@@ -231,9 +222,9 @@ async fn test_cancel_flushes_remaining_rows() {
     cancel.cancel();
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    assert_eq!(count_rows(&client, &table).await, 7);
+    assert_eq!(count_rows(&client).await, 7);
 
-    drop_test_table(&client, &table).await;
+    drop_test_table(&client).await;
 }
 
 // ==================== NoInserter (no thresholds) Tests ====================
@@ -242,7 +233,7 @@ async fn test_cancel_flushes_remaining_rows() {
 #[serial(clickhouse)]
 async fn test_no_thresholds_flushes_immediately() {
     let client = require_clickhouse!();
-    let table = create_test_table(&client).await;
+    create_test_table(&client).await;
 
     let cancel = CancellationToken::new();
     let config = Config {
@@ -251,8 +242,7 @@ async fn test_no_thresholds_flushes_immediately() {
         flush_interval: None,
         ..Config::default()
     };
-    let inserter =
-        inserter::spawn::<TestRow>(Arc::new(client.clone()), &table, config, cancel.clone());
+    let inserter = inserter::spawn::<TestRow>(Arc::new(client.clone()), config, cancel.clone());
 
     // With no thresholds, each insert flushes synchronously via NoInserter.
     inserter
@@ -264,13 +254,13 @@ async fn test_no_thresholds_flushes_immediately() {
         .unwrap();
 
     // Row should be visible immediately — no need to cancel or sleep.
-    assert_eq!(count_rows(&client, &table).await, 1);
+    assert_eq!(count_rows(&client).await, 1);
 
     inserter.insert_many(test_rows(3)).await.unwrap();
-    assert_eq!(count_rows(&client, &table).await, 4);
+    assert_eq!(count_rows(&client).await, 4);
 
     cancel.cancel();
-    drop_test_table(&client, &table).await;
+    drop_test_table(&client).await;
 }
 
 // ==================== Multiple Batch Tests ====================
@@ -279,19 +269,18 @@ async fn test_no_thresholds_flushes_immediately() {
 #[serial(clickhouse)]
 async fn test_multiple_batches() {
     let client = require_clickhouse!();
-    let table = create_test_table(&client).await;
+    create_test_table(&client).await;
 
     let cancel = CancellationToken::new();
     let config = Config::new()
         .with_max_rows(5)
         .with_flush_interval(Duration::from_secs(60));
-    let inserter =
-        inserter::spawn::<TestRow>(Arc::new(client.clone()), &table, config, cancel.clone());
+    let inserter = inserter::spawn::<TestRow>(Arc::new(client.clone()), config, cancel.clone());
 
     // First batch: triggers flush at 5 rows.
     inserter.insert_many(test_rows(5)).await.unwrap();
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert_eq!(count_rows(&client, &table).await, 5);
+    assert_eq!(count_rows(&client).await, 5);
 
     // Second batch: another 5 rows.
     let batch2: Vec<TestRow> = (10..15)
@@ -302,12 +291,12 @@ async fn test_multiple_batches() {
         .collect();
     inserter.insert_many(batch2).await.unwrap();
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert_eq!(count_rows(&client, &table).await, 10);
+    assert_eq!(count_rows(&client).await, 10);
 
     cancel.cancel();
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    drop_test_table(&client, &table).await;
+    drop_test_table(&client).await;
 }
 
 // ==================== Clone Handle Tests ====================
@@ -316,12 +305,12 @@ async fn test_multiple_batches() {
 #[serial(clickhouse)]
 async fn test_insert_trait_is_send_sync() {
     let client = require_clickhouse!();
-    let table = create_test_table(&client).await;
+    create_test_table(&client).await;
 
     let cancel = CancellationToken::new();
     let config = Config::new().with_flush_interval(Duration::from_secs(60));
     let inserter: Arc<dyn Insert<Row = TestRow>> =
-        inserter::spawn::<TestRow>(Arc::new(client.clone()), &table, config, cancel.clone());
+        inserter::spawn::<TestRow>(Arc::new(client.clone()), config, cancel.clone());
 
     // Use the trait object from two spawned tasks to verify Send + Sync.
     let ins1 = inserter.clone();
@@ -355,9 +344,9 @@ async fn test_insert_trait_is_send_sync() {
     cancel.cancel();
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    assert_eq!(count_rows(&client, &table).await, 10);
+    assert_eq!(count_rows(&client).await, 10);
 
-    drop_test_table(&client, &table).await;
+    drop_test_table(&client).await;
 }
 
 // ==================== Drop-on-channel-close Tests ====================
@@ -366,7 +355,7 @@ async fn test_insert_trait_is_send_sync() {
 #[serial(clickhouse)]
 async fn test_drop_inserter_flushes_on_channel_close() {
     let client = require_clickhouse!();
-    let table = create_test_table(&client).await;
+    create_test_table(&client).await;
 
     let cancel = CancellationToken::new();
     let config = Config::new()
@@ -375,8 +364,7 @@ async fn test_drop_inserter_flushes_on_channel_close() {
 
     // Scope the inserter so it drops (closing the channel).
     {
-        let inserter =
-            inserter::spawn::<TestRow>(Arc::new(client.clone()), &table, config, cancel.clone());
+        let inserter = inserter::spawn::<TestRow>(Arc::new(client.clone()), config, cancel.clone());
         inserter.insert_many(test_rows(3)).await.unwrap();
         // inserter (and its Sender) drops here.
     }
@@ -384,10 +372,10 @@ async fn test_drop_inserter_flushes_on_channel_close() {
     // The background task should detect channel close and flush.
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    assert_eq!(count_rows(&client, &table).await, 3);
+    assert_eq!(count_rows(&client).await, 3);
 
     cancel.cancel();
-    drop_test_table(&client, &table).await;
+    drop_test_table(&client).await;
 }
 
 // ==================== Config Builder Tests ====================
@@ -396,7 +384,7 @@ async fn test_drop_inserter_flushes_on_channel_close() {
 #[serial(clickhouse)]
 async fn test_config_max_bytes_threshold() {
     let client = require_clickhouse!();
-    let table = create_test_table(&client).await;
+    create_test_table(&client).await;
 
     let cancel = CancellationToken::new();
     let row_size = std::mem::size_of::<TestRow>() as u64;
@@ -405,17 +393,16 @@ async fn test_config_max_bytes_threshold() {
         .with_max_rows(1000) // high — won't trigger
         .with_max_bytes(row_size * 5)
         .with_flush_interval(Duration::from_secs(60));
-    let inserter =
-        inserter::spawn::<TestRow>(Arc::new(client.clone()), &table, config, cancel.clone());
+    let inserter = inserter::spawn::<TestRow>(Arc::new(client.clone()), config, cancel.clone());
 
     // Write 5 rows — should hit the byte threshold.
     inserter.insert_many(test_rows(5)).await.unwrap();
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    assert_eq!(count_rows(&client, &table).await, 5);
+    assert_eq!(count_rows(&client).await, 5);
 
     cancel.cancel();
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    drop_test_table(&client, &table).await;
+    drop_test_table(&client).await;
 }
